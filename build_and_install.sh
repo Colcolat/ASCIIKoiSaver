@@ -45,6 +45,10 @@ swiftc \
   "$PROJECT_DIR/Tools/GenerateThumbnail.swift"
 
 "$BUILD_DIR/gen_thumb" "$BUNDLE_DIR/Contents/Resources"
+tiffutil -cat \
+  "$BUNDLE_DIR/Contents/Resources/thumbnail.png" \
+  "$BUNDLE_DIR/Contents/Resources/thumbnail@2x.png" \
+  -out "$BUNDLE_DIR/Contents/Resources/thumbnail.tiff"
 
 echo "🔏 Firmando bundle (ad-hoc para $ARCH)..."
 codesign --force --deep --sign - "$BUNDLE_DIR"
@@ -54,7 +58,7 @@ mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_DIR/$BUNDLE_NAME"
 cp -R "$BUNDLE_DIR" "$INSTALL_DIR/$BUNDLE_NAME"
 
-# Reiniciar los procesos de screensaver y extensión de Wallpaper para recargar binario, opciones y miniatura
-killall legacyScreenSaver WallpaperLegacyExtension 2>/dev/null || true
+# Reiniciar los procesos de screensaver y Wallpaper para recargar binario, opciones y miniatura
+killall legacyScreenSaver WallpaperLegacyExtension WallpaperAgent 2>/dev/null || true
 
 echo "✅ ¡Listo! Instalado en: $INSTALL_DIR/$BUNDLE_NAME"

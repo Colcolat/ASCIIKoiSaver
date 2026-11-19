@@ -104,9 +104,16 @@ final class ASCIIKoiSaverView: ScreenSaverView {
         panel.isReleasedWhenClosed = false
         panel.isRestorable = false
         panel.hidesOnDeactivate = false
+        panel.contentMinSize = NSSize(width: 390, height: 280)
+        panel.contentMaxSize = NSSize(width: 390, height: 280)
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: 280))
+        content.translatesAutoresizingMaskIntoConstraints = false
         panel.contentView = content
+        NSLayoutConstraint.activate([
+            content.widthAnchor.constraint(equalToConstant: 390),
+            content.heightAnchor.constraint(equalToConstant: 280)
+        ])
 
         func makeLabel(_ text: String, frame: NSRect) -> NSTextField {
             let lbl = NSTextField(labelWithString: text)
