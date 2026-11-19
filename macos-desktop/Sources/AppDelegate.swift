@@ -78,12 +78,17 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         }
         trashMonitor.start()
 
-        musicMonitor.onMusicStateChanged = { [weak self] playing in
-            guard let self = self else { return }
-            self.wallpaper.setMusicPlaying(playing)
-            self.musicMenuItem.title = playing ? "Music: Playing ♪ (Reactive)" : "Music: Idle"
+        wallpaper.audioFrameProvider = { [weak self] in
+            self?.musicMonitor.consumeAudioFrame() ?? (0, 0, false)
         }
-        musicMonitor.start()
+        musicMonitor.onStatusChanged = { [weak self] _, detail in
+            self?.musicMenuItem.title = detail
+        }
+        if config.musicReactive {
+            musicMonitor.start()
+        } else {
+            musicMenuItem.title = "Music: Off"
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -315,6 +320,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     @objc private func toggleMusicReactive(_ sender: NSMenuItem) {
         config.musicReactive.toggle()
         sender.state = config.musicReactive ? .on : .off
+        if config.musicReactive { musicMonitor.start() } else { musicMonitor.stop() }
         savePreferences()
     }
 

@@ -384,8 +384,11 @@ final class PondEngine {
     private var pendingTrashBite: (() -> Void)? = nil
     private var agentsActive: Bool = false
     private var isMusicPlaying: Bool = false
-    private var musicBeatPhase: CGFloat = 0
-    private var musicBeatTimer: CGFloat = 0
+    private var audioBass: CGFloat = 0
+    private var beatEnergy: CGFloat = 0
+    private var beatSide: CGFloat = 1.0
+    private var beatNod: CGFloat = 0
+    private var musicNoteCooldown: CGFloat = 0
 
     private var time: CGFloat = 0
     private var rainTimer: CGFloat = 0
@@ -397,8 +400,27 @@ final class PondEngine {
         setupFont(size: 10.4)
     }
 
-    func setMusicPlaying(_ playing: Bool) {
+    func updateAudio(bass: CGFloat, beatHit: CGFloat, playing: Bool) {
         isMusicPlaying = playing
+        audioBass = bass
+        if config.musicReactive && beatHit > 0.1 {
+            beatSide = -beatSide // Alternate left/right head-nod on every real beat hit!
+            beatEnergy = max(beatEnergy, min(1.0, beatHit))
+            if let f = fishes.first(where: { !$0.leaving }), let head = f.renderNodes.first {
+                ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: (42 + beatHit * 36) * f.scale, alpha: 0.45 + beatHit * 0.35))
+                if beatHit > 0.65 && musicNoteCooldown <= 0 {
+                    trashCrumbs.append(TrashCrumb(
+                        x: head.x + CGFloat.random(in: -14...14),
+                        y: head.y + CGFloat.random(in: -14...14),
+                        vx: CGFloat.random(in: -10...10),
+                        vy: CGFloat.random(in: -20 ... -10),
+                        ch: "♪",
+                        life: 1.25
+                    ))
+                    musicNoteCooldown = 0.75
+                }
+            }
+        }
     }
 
     private func setupFont(size: CGFloat) {
@@ -992,25 +1014,15 @@ final class PondEngine {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
 
-        // Music-reactive rhythmic beat pulse (~118 BPM when audio is playing)
-        if config.musicReactive && isMusicPlaying {
-            musicBeatPhase += dt * 12.4
-            musicBeatTimer -= dt
-            if musicBeatTimer <= 0 {
-                if let f = fishes.randomElement(), let head = f.renderNodes.first {
-                    ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 62 * f.scale, alpha: 0.62))
-                    // Float a tiny musical note above the dancing Koi!
-                    trashCrumbs.append(TrashCrumb(
-                        x: head.x + CGFloat.random(in: -18...18),
-                        y: head.y + CGFloat.random(in: -18...18),
-                        vx: CGFloat.random(in: -12...12),
-                        vy: CGFloat.random(in: -22 ... -10),
-                        ch: "♪",
-                        life: 1.4
-                    ))
-                }
-                musicBeatTimer = 0.48
-            }
+        // Smoothly decay real-time beat energy & interpolate musical head-nod
+        musicNoteCooldown = max(0, musicNoteCooldown - dt)
+        if config.musicReactive {
+            beatEnergy *= exp(-5.0 * dt)
+            let targetNod = beatSide * beatEnergy
+            beatNod += (targetNod - beatNod) * min(1.0, dt * 15.0)
+        } else {
+            beatEnergy = 0
+            beatNod *= exp(-8.0 * dt)
         }
 
         // Snapshot parent agent positions BEFORE inout mutation to avoid Swift exclusive-access crash!
@@ -1271,8 +1283,7 @@ final class PondEngine {
         fish.turnVel = deltaAngle / dt
 
         let turnEffort = min(1.0, abs(diff) * 0.9)
-        let isGrooving = config.musicReactive && isMusicPlaying
-        let musicPulse: CGFloat = isGrooving ? (1.0 + 0.30 * max(0, sin(musicBeatPhase))) : 1.0
+        let musicPulse: CGFloat = config.musicReactive ? (1.0 + beatEnergy * 0.24) : 1.0
         let stateSpeedMult: CGFloat = {
             if fish.isTrashEater && fish.trashTarget != nil { return 1.45 }
             if fish.isSubagent, let parent = parentInfo {
@@ -1312,11 +1323,9 @@ final class PondEngine {
             let nx = -ty, ny = tx
             let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
             var sway = sin(fish.phase - t * 6.5) * amp
-            if isGrooving {
-                // Unmistakable rhythmic head-bob & full-body wag dancing to the music beat!
-                let headBob = sin(musicBeatPhase + fish.seed * 0.25) * (15.5 * (1.0 - t * 0.45) * fish.scale)
-                let bodyGroove = sin(musicBeatPhase * 1.0 - t * 5.6) * (10.5 * fish.scale)
-                sway += headBob + bodyGroove
+            if config.musicReactive && abs(beatNod) > 0.01 {
+                // Smooth, musical head & shoulder nod synced 1:1 to real bass/kick hits!
+                sway += beatNod * (12.0 * (1.0 - t * 0.65) * fish.scale)
             }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
         }

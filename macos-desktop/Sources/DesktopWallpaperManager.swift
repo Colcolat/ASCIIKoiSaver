@@ -35,9 +35,7 @@ final class DesktopWallpaperManager {
         }
     }
 
-    func setMusicPlaying(_ playing: Bool) {
-        for v in views { v.engine.setMusicPlaying(playing) }
-    }
+    var audioFrameProvider: (() -> (bass: CGFloat, beatHit: CGFloat, playing: Bool))?
 
     var desktopClicksEnabled: Bool = true
     var manuallyPaused: Bool = false {
@@ -244,7 +242,9 @@ final class DesktopWallpaperManager {
         let now = CACurrentMediaTime()
         let dt = lastTimestamp > 0 ? CGFloat(now - lastTimestamp) : (1.0 / 30.0)
         lastTimestamp = now
+        let audio = audioFrameProvider?() ?? (bass: 0, beatHit: 0, playing: false)
         for v in views {
+            v.engine.updateAudio(bass: audio.bass, beatHit: audio.beatHit, playing: audio.playing)
             v.engine.step(dt: dt)
             v.needsDisplay = true
         }

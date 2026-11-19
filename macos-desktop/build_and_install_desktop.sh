@@ -22,12 +22,13 @@ cp "$DESKTOP_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
 swiftc \
   -O \
   -swift-version 5 \
-  -target "${ARCH}-apple-macosx13.0" \
+  -target "${ARCH}-apple-macosx14.2" \
   -sdk "$SDK_PATH" \
   -framework AppKit \
   -framework QuartzCore \
   -framework CoreText \
   -framework CoreAudio \
+  -framework AudioToolbox \
   -o "$APP_DIR/Contents/MacOS/ASCIIKoiDesktop" \
   "$ROOT_DIR/Sources/PondEngine.swift" \
   "$DESKTOP_DIR/Sources/AgentMonitor.swift" \
