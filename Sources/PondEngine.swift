@@ -3,6 +3,21 @@ import CoreGraphics
 import CoreText
 import Foundation
 
+enum AgentModel: String, Codable {
+    case gemini, claude
+}
+
+enum AgentState: String, Codable {
+    case thinking, editing, waiting, done, error
+}
+
+struct AgentDescriptor: Equatable {
+    var id: String
+    var model: AgentModel
+    var state: AgentState
+    var isSubagent: Bool = false
+}
+
 struct SaverConfig {
     var timeMode: String = "auto"   // auto | day | sunset | night
     var season: String = "auto"     // auto | spring | summer | autumn | winter
@@ -10,6 +25,7 @@ struct SaverConfig {
     var showClock: Bool = true
     var rainOn: Bool = false
     var monoMode: Bool = false
+    var minimalistMode: Bool = false
     var isPreview: Bool = false
 }
 
@@ -98,6 +114,18 @@ private struct BarbelNode {
 
 private enum KoiVariety: CaseIterable {
     case showa, utsuri, sanke, ogon, kumonryu
+    case gemini, claude, trashEater
+
+    static let pondVarieties: [KoiVariety] = [.showa, .utsuri, .sanke, .ogon, .kumonryu]
+}
+
+private struct TrashCrumb {
+    var x: CGFloat
+    var y: CGFloat
+    var vx: CGFloat
+    var vy: CGFloat
+    var ch: Character
+    var life: CGFloat
 }
 
 private struct Koi {
@@ -131,6 +159,14 @@ private struct Koi {
     var breachSplashTick: CGFloat
     var hasEntered: Bool
     var leaving: Bool
+    var agentId: String? = nil
+    var agentState: AgentState? = nil
+    var isSubagent: Bool = false
+    var isTrashEater: Bool = false
+    var errorFlash: CGFloat = 0
+    var stateRippleTimer: CGFloat = 0
+    var trashTarget: CGPoint? = nil
+    var trashEating: Bool = false
 }
 
 private struct Turtle {
@@ -339,6 +375,8 @@ final class PondEngine {
     private var leaves: [Leaf] = []
     private var fireflies: [Firefly] = []
     private var stars: [(x: CGFloat, y: CGFloat, phase: CGFloat, spd: CGFloat)] = []
+    private var trashCrumbs: [TrashCrumb] = []
+    private var pendingTrashBite: (() -> Void)? = nil
 
     private var time: CGFloat = 0
     private var rainTimer: CGFloat = 0
@@ -665,12 +703,12 @@ final class PondEngine {
         )
     }
 
-    private func spawnKoiFromEdge() -> Koi {
+    private func spawnKoiFromEdge(forcedVariety: KoiVariety? = nil, scaleMult: CGFloat = 1.0, forcedZ: CGFloat? = nil) -> Koi {
         let s = screenScale()
         let edge = Int.random(in: 0..<4)
-        let variety = KoiVariety.allCases.randomElement() ?? .showa
-        let scale = CGFloat.random(in: 1.38...1.90) * s
-        let z = CGFloat.random(in: 0.22...0.92)
+        let variety = forcedVariety ?? (KoiVariety.pondVarieties.randomElement() ?? .showa)
+        let scale = CGFloat.random(in: 1.38...1.90) * s * scaleMult
+        let z = forcedZ ?? CGFloat.random(in: 0.22...0.92)
         let off = 95 * scale
         var x: CGFloat = 0, y: CGFloat = 0, angle: CGFloat = 0
         switch edge {
@@ -685,6 +723,134 @@ final class PondEngine {
         koi.wanderTimer = CGFloat.random(in: 4.5...8.0)
         koi.hasEntered = false
         return koi
+    }
+
+    // MARK: - Desktop Interactive & Useful Fish APIs
+
+    func onClick(x: CGFloat, y: CGFloat) {
+        let s = screenScale()
+        ripples.append(Ripple(x: x, y: y, r: 3 * s, maxR: 96 * s, alpha: 0.88))
+        ripples.append(Ripple(x: x, y: y, r: 1 * s, maxR: 54 * s, alpha: 0.62))
+        if let idx = fishes.firstIndex(where: { $0.agentId == nil && !$0.isTrashEater }) {
+            fishes[idx].leaving = false
+            fishes[idx].targetX = max(60, min(width - 60, x))
+            fishes[idx].targetY = max(60, min(height - 60, y))
+            fishes[idx].targetZ = 0.94
+            fishes[idx].wanderTimer = 4.5
+        }
+        for i in 0..<minnows.count {
+            let dx = minnows[i].x - x, dy = minnows[i].y - y
+            let d = max(1, hypot(dx, dy))
+            if d < 150 * s {
+                minnows[i].vx += (dx / d) * 160
+                minnows[i].vy += (dy / d) * 160
+                minnows[i].boost = 1.0
+            }
+        }
+    }
+
+    func syncAgents(_ activeAgents: [AgentDescriptor]) {
+        let activeIds = Set(activeAgents.map { $0.id })
+
+        // Mark removed or .done agents for triumphant breach + exit
+        for i in 0..<fishes.count {
+            guard let aid = fishes[i].agentId else { continue }
+            if !activeIds.contains(aid) && !fishes[i].leaving {
+                triggerAgentDeparture(&fishes[i])
+            }
+        }
+
+        // Update existing or spawn newly active agent Koi
+        for ag in activeAgents {
+            if let idx = fishes.firstIndex(where: { $0.agentId == ag.id }) {
+                let prevState = fishes[idx].agentState
+                fishes[idx].agentState = ag.state
+                if ag.state == .done && !fishes[idx].leaving {
+                    triggerAgentDeparture(&fishes[idx])
+                } else if ag.state == .error && prevState != .error {
+                    fishes[idx].errorFlash = 1.0
+                    let head = fishes[idx].renderNodes[0]
+                    ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 65, alpha: 0.92))
+                }
+            } else if ag.state != .done {
+                let variety: KoiVariety = (ag.model == .gemini) ? .gemini : .claude
+                let scaleMult: CGFloat = ag.isSubagent ? 0.72 : 1.08
+                var koi = spawnKoiFromEdge(forcedVariety: variety, scaleMult: scaleMult, forcedZ: ag.isSubagent ? 0.78 : 0.92)
+                koi.agentId = ag.id
+                koi.agentState = ag.state
+                koi.isSubagent = ag.isSubagent
+                fishes.append(koi)
+            }
+        }
+    }
+
+    private func triggerAgentDeparture(_ fish: inout Koi) {
+        fish.leaving = true
+        fish.agentState = .done
+        if !fish.breaching {
+            fish.breaching = true
+            fish.breachProgress = 0
+            fish.breachSplashTick = 0
+            let pt = fish.renderNodes[min(2, fish.N - 1)]
+            spawnSplashBurst(x: pt.x, y: pt.y, count: 16, power: 1.15)
+        }
+        let exitEdge = Int.random(in: 0..<4)
+        let far = 460 * fish.scale
+        switch exitEdge {
+        case 0: fish.targetX = -far; fish.targetY = CGFloat.random(in: 0...height)
+        case 1: fish.targetX = width + far; fish.targetY = CGFloat.random(in: 0...height)
+        case 2: fish.targetX = CGFloat.random(in: 0...width); fish.targetY = -far
+        default: fish.targetX = CGFloat.random(in: 0...width); fish.targetY = height + far
+        }
+    }
+
+    /// Curious visual visit when files are dropped in ~/.Trash (never deletes anything).
+    func triggerTrashVisit(at point: CGPoint) {
+        ensureTrashEaterKoi(near: point, eating: false)
+        spawnTrashCrumbs(at: point, count: 5)
+    }
+
+    /// Active feeding frenzy triggered by user ("Feed Trash to Koi"): gobbles crumbs then calls onBite to empty Trash.
+    func triggerFeedTrash(at point: CGPoint, onBite: @escaping () -> Void) {
+        pendingTrashBite = onBite
+        ensureTrashEaterKoi(near: point, eating: true)
+        spawnTrashCrumbs(at: point, count: 14)
+    }
+
+    private func ensureTrashEaterKoi(near point: CGPoint, eating: Bool) {
+        if let idx = fishes.firstIndex(where: { $0.isTrashEater }) {
+            fishes[idx].leaving = false
+            fishes[idx].trashTarget = point
+            fishes[idx].trashEating = eating
+            fishes[idx].targetX = point.x
+            fishes[idx].targetY = point.y
+            fishes[idx].targetZ = 0.96
+            fishes[idx].wanderTimer = 8.0
+        } else {
+            var koi = spawnKoiFromEdge(forcedVariety: .trashEater, scaleMult: 1.16, forcedZ: 0.92)
+            koi.isTrashEater = true
+            koi.trashTarget = point
+            koi.trashEating = eating
+            koi.targetX = point.x
+            koi.targetY = point.y
+            koi.wanderTimer = 8.0
+            fishes.append(koi)
+        }
+    }
+
+    private func spawnTrashCrumbs(at point: CGPoint, count: Int) {
+        let glyphs: [Character] = ["#", "%", "+", "@", "*", "~"]
+        for _ in 0..<count {
+            trashCrumbs.append(TrashCrumb(
+                x: point.x + CGFloat.random(in: -34...34),
+                y: point.y + CGFloat.random(in: -28...28),
+                vx: CGFloat.random(in: -14...14),
+                vy: CGFloat.random(in: -14...14),
+                ch: glyphs.randomElement() ?? "#",
+                life: CGFloat.random(in: 5.5...8.5)
+            ))
+        }
+        ripples.append(Ripple(x: point.x, y: point.y, r: 3, maxR: 52, alpha: 0.72))
     }
 
     private func initEcosystem() {
@@ -760,24 +926,72 @@ final class PondEngine {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
 
-        for i in 0..<fishes.count {
-            updateKoi(&fishes[i], dt: dt)
-            if fishes[i].leaving {
-                let padOut = 110 * fishes[i].scale
-                let allOut = fishes[i].renderNodes.allSatisfy { rn in
+        var fIdx = fishes.count - 1
+        while fIdx >= 0 {
+            updateKoi(&fishes[fIdx], dt: dt)
+            if fishes[fIdx].leaving {
+                let padOut = 110 * fishes[fIdx].scale
+                let allOut = fishes[fIdx].renderNodes.allSatisfy { rn in
                     rn.x <= -padOut || rn.x >= width + padOut || rn.y <= -padOut || rn.y >= height + padOut
                 }
                 if allOut {
-                    fishes[i] = spawnKoiFromEdge()
+                    if fishes[fIdx].agentId != nil || fishes[fIdx].isTrashEater {
+                        fishes.remove(at: fIdx)
+                    } else {
+                        fishes[fIdx] = spawnKoiFromEdge()
+                    }
                 }
             }
+            fIdx -= 1
         }
-        if turtle != nil { updateTurtle(&turtle!, dt: dt) }
-        updateMinnows(dt: dt)
-        if dragonfly != nil { updateDragonfly(&dragonfly!, dt: dt) }
-        if frog != nil { updateFrog(&frog!, dt: dt) }
-        updatePlantsAndBubbles(dt: dt)
-        updateSplashesAndLeaves(dt: dt)
+
+        // Update floating Trash crumbs (drawn into Trash-Eater Koi's mouth!)
+        let trashHead = fishes.first(where: { $0.isTrashEater })?.renderNodes.first
+        var cIdx = trashCrumbs.count - 1
+        while cIdx >= 0 {
+            trashCrumbs[cIdx].life -= dt
+            trashCrumbs[cIdx].x += trashCrumbs[cIdx].vx * dt
+            trashCrumbs[cIdx].y += trashCrumbs[cIdx].vy * dt
+            trashCrumbs[cIdx].vx *= exp(-2.2 * dt)
+            trashCrumbs[cIdx].vy *= exp(-2.2 * dt)
+            if let th = trashHead {
+                let dx = th.x - trashCrumbs[cIdx].x, dy = th.y - trashCrumbs[cIdx].y
+                let d = hypot(dx, dy)
+                if d < 120 {
+                    trashCrumbs[cIdx].x += (dx / max(1, d)) * 130 * dt
+                    trashCrumbs[cIdx].y += (dy / max(1, d)) * 130 * dt
+                }
+                if d < 26 {
+                    bubbles.append(Bubble(x: th.x, y: th.y, z: 0.72, vz: 0.45, wigglePhase: 0, wiggleAmp: 4))
+                    trashCrumbs.remove(at: cIdx)
+                    cIdx -= 1
+                    continue
+                }
+            }
+            if trashCrumbs[cIdx].life <= 0 { trashCrumbs.remove(at: cIdx) }
+            cIdx -= 1
+        }
+
+        if !config.minimalistMode {
+            if turtle != nil { updateTurtle(&turtle!, dt: dt) }
+            updateMinnows(dt: dt)
+            if dragonfly != nil { updateDragonfly(&dragonfly!, dt: dt) }
+            if frog != nil { updateFrog(&frog!, dt: dt) }
+            updatePlantsAndBubbles(dt: dt)
+            updateSplashesAndLeaves(dt: dt)
+        } else {
+            // Still animate bubbles & splashes in minimalist mode
+            updateSplashesAndLeaves(dt: dt)
+            var bIdx = bubbles.count - 1
+            while bIdx >= 0 {
+                bubbles[bIdx].z += bubbles[bIdx].vz * dt
+                if bubbles[bIdx].z >= 1.0 {
+                    ripples.append(Ripple(x: bubbles[bIdx].x, y: bubbles[bIdx].y, r: 2, maxR: 22, alpha: 0.64))
+                    bubbles.remove(at: bIdx)
+                }
+                bIdx -= 1
+            }
+        }
 
         if config.rainOn {
             rainTimer -= dt
@@ -839,10 +1053,73 @@ final class PondEngine {
         fish.barbelSegLen = 5.2 * fish.scale
 
         fish.wanderTimer -= dt
+        fish.errorFlash = max(0, fish.errorFlash - dt * 1.4)
+        fish.stateRippleTimer -= dt
         let head = fish.nodes[0]
         if head.x > 40 && head.x < width - 40 && head.y > 40 && head.y < height - 40 { fish.hasEntered = true }
 
-        if !fish.leaving && (hypot(fish.targetX - head.x, fish.targetY - head.y) < 85 || fish.wanderTimer <= 0) {
+        // Trash-Eater Koi arrival logic
+        if fish.isTrashEater, let tPt = fish.trashTarget, !fish.leaving {
+            fish.targetX = tPt.x
+            fish.targetY = tPt.y
+            fish.targetZ = 0.96
+            if hypot(tPt.x - head.x, tPt.y - head.y) < 52 {
+                spawnSplashBurst(x: tPt.x, y: tPt.y, count: fish.trashEating ? 14 : 5, power: fish.trashEating ? 0.95 : 0.55)
+                if fish.trashEating {
+                    let cb = pendingTrashBite
+                    pendingTrashBite = nil
+                    cb?()
+                }
+                fish.trashTarget = nil
+                fish.trashEating = false
+                fish.leaving = true
+                fish.targetX = -420 * fish.scale
+                fish.targetY = height * 0.45
+            }
+        } else if let st = fish.agentState, !fish.leaving {
+            // Reactive AI Agent Koi behaviors
+            switch st {
+            case .thinking:
+                fish.targetZ = 0.65
+                if fish.stateRippleTimer <= 0 {
+                    bubbles.append(Bubble(x: head.x, y: head.y, z: 0.65, vz: 0.35, wigglePhase: 0, wiggleAmp: 5))
+                    fish.stateRippleTimer = CGFloat.random(in: 0.9...1.7)
+                }
+                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 90 || fish.wanderTimer <= 0 {
+                    let orbitAng = time * 0.55 + fish.seed
+                    fish.targetX = width * 0.5 + cos(orbitAng) * width * 0.24
+                    fish.targetY = height * 0.5 + sin(orbitAng) * height * 0.22
+                    fish.wanderTimer = 2.4
+                }
+            case .editing:
+                fish.targetZ = 0.92
+                if fish.stateRippleTimer <= 0 {
+                    ripples.append(Ripple(x: head.x, y: head.y, r: 3, maxR: 38 * fish.scale, alpha: 0.48))
+                    fish.stateRippleTimer = 0.55
+                }
+                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 90 || fish.wanderTimer <= 0 {
+                    fish.targetX = CGFloat.random(in: width * 0.14...max(width * 0.15, width * 0.86))
+                    fish.targetY = CGFloat.random(in: height * 0.14...max(height * 0.15, height * 0.86))
+                    fish.wanderTimer = 2.2
+                }
+            case .waiting:
+                fish.targetZ = 0.97
+                fish.targetX = width * 0.50 + sin(time * 0.8 + fish.seed) * 70
+                fish.targetY = height * 0.72 + cos(time * 0.6 + fish.seed) * 35
+                if fish.stateRippleTimer <= 0 {
+                    ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 62, alpha: 0.72))
+                    fish.stateRippleTimer = 1.25
+                }
+            case .error:
+                fish.targetZ = 0.95
+                if fish.stateRippleTimer <= 0 {
+                    ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 72, alpha: 0.88))
+                    fish.stateRippleTimer = 0.75
+                }
+            case .done:
+                break
+            }
+        } else if !fish.leaving && (hypot(fish.targetX - head.x, fish.targetY - head.y) < 85 || fish.wanderTimer <= 0) {
             if fish.hasEntered && CGFloat.random(in: 0...1) < 0.35 {
                 fish.leaving = true
                 let exitEdge = Int.random(in: 0..<4)
@@ -862,13 +1139,22 @@ final class PondEngine {
 
         let desiredAngle = atan2(fish.targetY - head.y, fish.targetX - head.x)
         let diff = normalizeAngle(desiredAngle - fish.angle)
-        let maxTurn = fish.turnRate * dt
+        let maxTurn = fish.turnRate * (fish.agentState == .editing ? 1.35 : 1.0) * dt
         let deltaAngle = max(-maxTurn, min(maxTurn, diff))
         fish.angle += deltaAngle
         fish.turnVel = deltaAngle / dt
 
         let turnEffort = min(1.0, abs(diff) * 0.9)
-        let surge: CGFloat = fish.breaching ? 1.38 : 1.0
+        let stateSpeedMult: CGFloat = {
+            if fish.isTrashEater && fish.trashTarget != nil { return 1.48 }
+            switch fish.agentState {
+            case .editing: return 1.42
+            case .waiting: return 0.62
+            case .thinking: return 0.88
+            default: return 1.0
+            }
+        }()
+        let surge: CGFloat = fish.breaching ? 1.38 : stateSpeedMult
         let targetSpeed = fish.baseSpeed * surge * (1.0 + turnEffort * 0.28)
         fish.speed += (targetSpeed - fish.speed) * min(1.0, dt * 3.2)
         fish.phase += dt * (4.5 + turnEffort * 2.2 + (fish.breaching ? 2.5 : 0))
@@ -1216,8 +1502,9 @@ final class PondEngine {
         return ((CGFloat(bestIdx) + bestU) / CGFloat(nSeg), dx * nx + dy * ny, sqrt(bestDistSq), nx, ny)
     }
 
-    // 0: white, 1: red, 2: black, 3: gold
+    // 0: white, 1: red, 2: black, 3: gold, 4: geminiBlue, 5: geminiViolet, 6: geminiCyan, 7: claudeTerracotta, 8: claudeCream
     private func getPigment(_ fish: Koi, _ t: CGFloat, _ normLat: CGFloat) -> Int {
+        if fish.errorFlash > 0.25 { return 1 }
         if fish.variety == .ogon { return 3 }
         let sd = fish.seed
         let n1 = fbm(t * 4.3 + sd, normLat * 1.5 + sd * 0.7)
@@ -1238,6 +1525,16 @@ final class PondEngine {
             return n2 > 0.46 ? 1 : 0
         case .ogon:
             return 3
+        case .gemini:
+            // Electric blue -> indigo-violet -> bright cyan shimmer along spine!
+            if abs(normLat) < 0.28 && n3 > 0.56 { return 6 }
+            return (t + n1 * 0.35) < 0.52 ? 4 : 5
+        case .claude:
+            // Warm terracotta/coral saddles over soft pearly cream
+            return n1 > 0.42 ? 7 : 8
+        case .trashEater:
+            // Bold obsidian & bronze-gold Koi
+            return n1 > 0.54 ? 3 : 2
         }
     }
 
@@ -1685,23 +1982,25 @@ final class PondEngine {
                 minR: max(0, Int(floor((minY - pad) / cellH))), maxR: min(rows - 1, Int(ceil((maxY + pad + shY) / cellH)))
             ))
         }
-        if let tr = turtle {
-            let pad = 54 * tr.scale
-            let shX = 6 + tr.z * 28, shY = 5 + tr.z * 24
-            actors.append(ActorBox(
-                kind: 1, index: 0, z: tr.z, shX: shX, shY: shY,
-                minC: max(0, Int(floor((tr.x - pad) / cellW))), maxC: min(cols - 1, Int(ceil((tr.x + pad + shX) / cellW))),
-                minR: max(0, Int(floor((tr.y - pad) / cellH))), maxR: min(rows - 1, Int(ceil((tr.y + pad + shY) / cellH)))
-            ))
-        }
-        for i in 0..<minnows.count {
-            let m = minnows[i]
-            let shX = 6 + m.z * 25, shY = 5 + m.z * 22
-            actors.append(ActorBox(
-                kind: 2, index: i, z: m.z, shX: shX, shY: shY,
-                minC: max(0, Int(floor((m.x - 36) / cellW))), maxC: min(cols - 1, Int(ceil((m.x + 36 + shX) / cellW))),
-                minR: max(0, Int(floor((m.y - 36) / cellH))), maxR: min(rows - 1, Int(ceil((m.y + 36 + shY) / cellH)))
-            ))
+        if !config.minimalistMode {
+            if let tr = turtle {
+                let pad = 54 * tr.scale
+                let shX = 6 + tr.z * 28, shY = 5 + tr.z * 24
+                actors.append(ActorBox(
+                    kind: 1, index: 0, z: tr.z, shX: shX, shY: shY,
+                    minC: max(0, Int(floor((tr.x - pad) / cellW))), maxC: min(cols - 1, Int(ceil((tr.x + pad + shX) / cellW))),
+                    minR: max(0, Int(floor((tr.y - pad) / cellH))), maxR: min(rows - 1, Int(ceil((tr.y + pad + shY) / cellH)))
+                ))
+            }
+            for i in 0..<minnows.count {
+                let m = minnows[i]
+                let shX = 6 + m.z * 25, shY = 5 + m.z * 22
+                actors.append(ActorBox(
+                    kind: 2, index: i, z: m.z, shX: shX, shY: shY,
+                    minC: max(0, Int(floor((m.x - 36) / cellW))), maxC: min(cols - 1, Int(ceil((m.x + 36 + shX) / cellW))),
+                    minR: max(0, Int(floor((m.y - 36) / cellH))), maxR: min(rows - 1, Int(ceil((m.y + 36 + shY) / cellH)))
+                ))
+            }
         }
         actors.sort { $0.z > $1.z }
 
@@ -1714,7 +2013,7 @@ final class PondEngine {
                 let px = (CGFloat(c) + 0.5) * cellW
 
                 // 0. Lily pads on top of water
-                if let lp = sampleLotus(px, py) {
+                if !config.minimalistMode, let lp = sampleLotus(px, py) {
                     if lp.flower {
                         let m = 1.05 - lp.norm * 0.2
                         drawGlyph(ctx, lp.norm < 0.4 ? "@" : "*", col: c, row: r, r: pal.flower.r * m, g: pal.flower.g * m, b: pal.flower.b * m)
@@ -1799,6 +2098,11 @@ final class PondEngine {
                         case 1: baseRgb = pal.red; boost = 0.50 + shade * 0.62
                         case 2: baseRgb = pal.black; boost = 0.70 + shade * 1.50; ch = shade > 0.80 ? "#" : (isScaleEdge ? ":" : "%")
                         case 3: baseRgb = pal.gold; boost = 0.50 + shade * 0.68
+                        case 4: baseRgb = config.monoMode ? pal.white : RGB(66, 146, 255); boost = 0.58 + shade * 0.68
+                        case 5: baseRgb = config.monoMode ? pal.fin : RGB(154, 108, 255); boost = 0.58 + shade * 0.68
+                        case 6: baseRgb = config.monoMode ? pal.white : RGB(115, 246, 255); boost = 0.85 + shade * 0.45; ch = "*"
+                        case 7: baseRgb = config.monoMode ? pal.red : RGB(224, 118, 76); boost = 0.55 + shade * 0.65
+                        case 8: baseRgb = config.monoMode ? pal.white : RGB(248, 232, 208); boost = 0.52 + shade * 0.62
                         default: baseRgb = pal.white
                         }
                         drawDepthGlyph(ctx, ch, col: c, row: r, rgb: baseRgb, z: depthZ, pal: pal, mult: boost)
@@ -1834,7 +2138,7 @@ final class PondEngine {
                     drawGlyph(ctx, isDense ? ":" : "·", col: c, row: r, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha)
                     continue
                 }
-                if sampleLotusShadow(px, py) {
+                if !config.minimalistMode && sampleLotusShadow(px, py) {
                     drawGlyph(ctx, "·", col: c, row: r, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha)
                     continue
                 }
@@ -1846,13 +2150,13 @@ final class PondEngine {
                 }
 
                 // 5. Submerged oxygenating plants
-                if let plHit = samplePlant(px, py) {
+                if !config.minimalistMode, let plHit = samplePlant(px, py) {
                     drawDepthGlyph(ctx, plHit.ch, col: c, row: r, rgb: plHit.tip > 0.55 ? pal.plantTip : pal.plant, z: 0.16 + plHit.tip * 0.24, pal: pal, mult: 0.82 + plHit.tip * 0.35)
                     continue
                 }
 
                 // 6. Submerged stone clock
-                if isClockCell(c, r, timeChars) {
+                if !config.minimalistMode && isClockCell(c, r, timeChars) {
                     let shimmer = 0.75 + 0.25 * sin(CGFloat(c) * 0.2 + time * 1.1)
                     drawGlyph(ctx, ":", col: c, row: r, r: pal.clock.r * shimmer, g: pal.clock.g * shimmer, b: pal.clock.b * shimmer, a: 0.62)
                     continue
@@ -1873,13 +2177,15 @@ final class PondEngine {
                     }
                 }
 
-                let stVal = stoneMap[rowOff + c]
-                if stVal > 0.15 {
-                    let causticBoost: CGFloat = wave > 0.55 ? (wave - 0.55) * 0.75 : 0
-                    let sIdx = max(1, min(stoneRamp.count - 1, Int((stVal + causticBoost * 0.4) * CGFloat(stoneRamp.count - 1))))
-                    let m = 0.55 + stVal * 0.65 + causticBoost * 0.6
-                    drawGlyph(ctx, stoneRamp[sIdx], col: c, row: r, r: pal.stone.r * m, g: pal.stone.g * m, b: pal.stone.b * m)
-                    continue
+                if !config.minimalistMode {
+                    let stVal = stoneMap[rowOff + c]
+                    if stVal > 0.15 {
+                        let causticBoost: CGFloat = wave > 0.55 ? (wave - 0.55) * 0.75 : 0
+                        let sIdx = max(1, min(stoneRamp.count - 1, Int((stVal + causticBoost * 0.4) * CGFloat(stoneRamp.count - 1))))
+                        let m = 0.55 + stVal * 0.65 + causticBoost * 0.6
+                        drawGlyph(ctx, stoneRamp[sIdx], col: c, row: r, r: pal.stone.r * m, g: pal.stone.g * m, b: pal.stone.b * m)
+                        continue
+                    }
                 }
 
                 if wave > 0.78 {
@@ -1926,7 +2232,7 @@ final class PondEngine {
         }
 
         // Detailed Procedural Pond Frog (with shadow, bulging eyes, spots & kicking hind legs!)
-        if let fr = frog {
+        if !config.minimalistMode, let fr = frog {
             let fPad = 40 * screenScale()
             let fMinC = max(0, Int(floor((fr.x - fPad) / cellW)))
             let fMaxC = min(cols - 1, Int(ceil((fr.x + fPad) / cellW)))
@@ -1963,7 +2269,7 @@ final class PondEngine {
 
         // Botanical Leaves / Sakura / Snow
         let leafPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
-        for lf in leaves {
+        for lf in (config.minimalistMode ? [] : leaves) {
             let h = max(0, lf.z - 1.0)
             let fadeOut: CGFloat = (lf.floating && lf.age > lf.maxAge - 3) ? max(0, (lf.maxAge - lf.age) / 3) : 1
             let drawR = lf.size * (1.0 + h * 0.52)
@@ -2035,8 +2341,16 @@ final class PondEngine {
             }
         }
 
+        // Trash crumbs floating toward Trash-Eater Koi
+        for cr in trashCrumbs {
+            let cc = Int(cr.x / cellW), crRow = Int(cr.y / cellH)
+            if cc >= 0 && cc < cols && crRow >= 0 && crRow < rows {
+                drawGlyph(ctx, cr.ch, col: cc, row: crRow, r: pal.gold.r, g: pal.gold.g, b: pal.gold.b, a: min(1.0, cr.life * 0.4))
+            }
+        }
+
         // Dragonfly
-        if let df = dragonfly {
+        if !config.minimalistMode, let df = dragonfly {
             let h = max(0, df.z - 1.0)
             let shC = Int((df.x + 14 + h * 36) / cellW), shR = Int((df.y + 12 + h * 30) / cellH)
             if shC >= 1 && shC < cols - 1 && shR >= 1 && shR < rows - 1 {
