@@ -111,6 +111,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         config.monoMode = d.bool(forKey: "monoMode")
         config.minimalistMode = d.bool(forKey: "minimalistMode")
         config.musicReactive = d.object(forKey: "musicReactive") == nil ? true : d.bool(forKey: "musicReactive")
+        config.treeBranch = d.string(forKey: "treeBranch") ?? "bottomRight"
         wallpaper.desktopClicksEnabled = d.object(forKey: "desktopClicks") == nil ? true : d.bool(forKey: "desktopClicks")
     }
 
@@ -124,6 +125,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         d.set(config.monoMode, forKey: "monoMode")
         d.set(config.minimalistMode, forKey: "minimalistMode")
         d.set(config.musicReactive, forKey: "musicReactive")
+        d.set(config.treeBranch, forKey: "treeBranch")
         d.set(wallpaper.desktopClicksEnabled, forKey: "desktopClicks")
         wallpaper.config = config
     }
@@ -222,6 +224,25 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         koiItem.submenu = koiSub
         menu.addItem(koiItem)
 
+        // Overhanging Tree Branch Submenu
+        let branchSub = NSMenu()
+        for (title, val) in [
+            ("Off", "none"),
+            ("Bottom-Right Corner", "bottomRight"),
+            ("Top-Right Corner", "topRight"),
+            ("Top-Left Corner", "topLeft"),
+            ("Bottom-Left Corner", "bottomLeft")
+        ] {
+            let item = NSMenuItem(title: title, action: #selector(selectTreeBranch(_:)), keyEquivalent: "")
+            item.representedObject = val
+            item.state = (config.treeBranch == val) ? .on : .off
+            item.target = self
+            branchSub.addItem(item)
+        }
+        let branchItem = NSMenuItem(title: "Tree Branch", action: nil, keyEquivalent: "")
+        branchItem.submenu = branchSub
+        menu.addItem(branchItem)
+
         menu.addItem(.separator())
 
         // Toggles
@@ -307,6 +328,13 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
 
     @objc private func selectKoiCount(_ sender: NSMenuItem) {
         config.koiCount = sender.tag
+        sender.menu?.items.forEach { $0.state = ($0 == sender) ? .on : .off }
+        savePreferences()
+    }
+
+    @objc private func selectTreeBranch(_ sender: NSMenuItem) {
+        guard let val = sender.representedObject as? String else { return }
+        config.treeBranch = val
         sender.menu?.items.forEach { $0.state = ($0 == sender) ? .on : .off }
         savePreferences()
     }

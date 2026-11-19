@@ -29,6 +29,7 @@ struct SaverConfig {
     var monoMode: Bool = false
     var minimalistMode: Bool = false
     var musicReactive: Bool = true
+    var treeBranch: String = "bottomRight" // none | topRight | topLeft | bottomRight | bottomLeft
     var isPreview: Bool = false
 }
 
@@ -413,6 +414,20 @@ final class PondEngine {
     private var batchGlyphs: [UInt32: [CGGlyph]] = [:]
     private var batchPositions: [UInt32: [CGPoint]] = [:]
     private var batchKeys: [UInt32] = []
+
+    // Pre-rasterized overhanging corner tree branch (rebuilt ONLY on resize/season/corner change -> ~0.1ms/frame!)
+    private struct BranchCell {
+        let col: Int
+        let row: Int
+        let ch: Character
+        let kind: UInt8 // 0 = bark, 1 = bark highlight, 2 = foliage/petal, 3 = bright blossom/snow
+        let colorIdx: Int
+        let swayWeight: CGFloat
+    }
+    private var branchCells: [BranchCell] = []
+    private var branchShadowCells: [(col: Int, row: Int, ch: Character, swayWeight: CGFloat)] = []
+    private var branchTipPoints: [CGPoint] = []
+    private var branchCacheKey: String = ""
 
     init() {
         setupFont(size: 10.4)
@@ -1043,18 +1058,41 @@ final class PondEngine {
         let s = screenScale()
         let actSeason = activeSeason()
         let isWinter = actSeason == "winter"
-        let fromTop = Bool.random()
-        let startX = fromTop ? CGFloat.random(in: 0...(width * 0.85)) : -52 * s
-        let startY = fromTop ? -52 * s : CGFloat.random(in: 0...(height * 0.78))
+
+        let startX: CGFloat
+        let startY: CGFloat
+        let startZ: CGFloat
+        var vx: CGFloat
+        var vy: CGFloat
+
+        if config.treeBranch != "none" && !config.minimalistMode && !branchTipPoints.isEmpty && CGFloat.random(in: 0...1) < 0.72 {
+            // Detach petal/leaf directly from the overhanging corner tree branch!
+            let tip = branchTipPoints[Int.random(in: 0..<branchTipPoints.count)]
+            startX = tip.x + CGFloat.random(in: -10...10) * s
+            startY = tip.y + CGFloat.random(in: -10...10) * s
+            startZ = CGFloat.random(in: 1.55...1.85)
+            // Drift gently inward from the branch's corner toward the open pond
+            let dirX: CGFloat = (config.treeBranch == "topRight" || config.treeBranch == "bottomRight") ? -1.0 : 1.0
+            let dirY: CGFloat = (config.treeBranch == "bottomRight" || config.treeBranch == "bottomLeft") ? -0.45 : 0.75
+            vx = (dirX * CGFloat.random(in: 16...36) + CGFloat.random(in: -8...8)) * s
+            vy = (dirY * CGFloat.random(in: 14...28) + CGFloat.random(in: -6...6)) * s
+        } else {
+            let fromTop = Bool.random()
+            startX = fromTop ? CGFloat.random(in: 0...(width * 0.85)) : -52 * s
+            startY = fromTop ? -52 * s : CGFloat.random(in: 0...(height * 0.78))
+            startZ = forceVisible ? 2.15 : CGFloat.random(in: 2.15...2.55)
+            vx = ((isWinter ? 18 : 34) + CGFloat.random(in: 0...22)) * s
+            vy = ((isWinter ? 20 : 22) + CGFloat.random(in: 0...18)) * s
+        }
+
         leaves.append(Leaf(
             x: startX, y: startY,
-            z: forceVisible ? 2.15 : CGFloat.random(in: 2.15...2.55),
-            vx: ((isWinter ? 18 : 34) + CGFloat.random(in: 0...22)) * s,
-            vy: ((isWinter ? 20 : 22) + CGFloat.random(in: 0...18)) * s,
+            z: startZ,
+            vx: vx, vy: vy,
             rot: CGFloat.random(in: 0...(2 * .pi)), rotSpd: CGFloat.random(in: -0.8...0.8),
             tumble: CGFloat.random(in: 0...(2 * .pi)), tumbleSpd: CGFloat.random(in: 2.2...3.6),
             swayPhase: CGFloat.random(in: 0...(2 * .pi)), colorIdx: Int.random(in: 0..<3),
-            size: (isWinter ? CGFloat.random(in: 13...19) : CGFloat.random(in: 28...39)) * s,
+            size: (isWinter ? CGFloat.random(in: 13...19) : CGFloat.random(in: 24...36)) * s,
             maple: CGFloat.random(in: 0...1) > 0.25, isSnow: isWinter,
             floating: false, age: 0, maxAge: isWinter ? 0.2 : CGFloat.random(in: 34...50)
         ))
@@ -2207,6 +2245,140 @@ final class PondEngine {
         }
     }
 
+    private func ensureTreeBranchCache(season actSeason: String) {
+        let key = "\(config.treeBranch)_\(actSeason)_\(cols)x\(rows)"
+        if branchCacheKey == key { return }
+        branchCacheKey = key
+        branchCells.removeAll(keepingCapacity: true)
+        branchShadowCells.removeAll(keepingCapacity: true)
+        branchTipPoints.removeAll(keepingCapacity: true)
+
+        guard config.treeBranch != "none", cols > 20, rows > 12 else { return }
+
+        let s = screenScale()
+        let spanX = min(width * 0.27, 410 * s)
+        let spanY = min(height * 0.28, 285 * s)
+
+        let isRight = (config.treeBranch == "topRight" || config.treeBranch == "bottomRight")
+        let isBottom = (config.treeBranch == "bottomRight" || config.treeBranch == "bottomLeft")
+        let anchorX: CGFloat = isRight ? width + 6 : -6
+        let anchorY: CGFloat = isBottom ? height + 6 : -6
+        let dirX: CGFloat = isRight ? -1 : 1
+        let dirY: CGFloat = isBottom ? -1 : 1
+
+        func toWorld(_ u: CGFloat, _ v: CGFloat) -> CGPoint {
+            CGPoint(x: anchorX + dirX * u * spanX, y: anchorY + dirY * v * spanY)
+        }
+
+        // Deduplicated cell map: key = row * cols + col -> BranchCell
+        var cellMap: [Int: BranchCell] = [:]
+        var shadowSet = Set<Int>()
+
+        func putCell(px: CGFloat, py: CGFloat, ch: Character, kind: UInt8, colorIdx: Int, sway: CGFloat) {
+            let c = Int(px / cellW), r = Int(py / cellH)
+            guard c >= 0 && c < cols && r >= 0 && r < rows else { return }
+            let idx = r * cols + c
+            // Foliage/blossoms render on top of bark; bark highlights on top of bark
+            if let existing = cellMap[idx], existing.kind > kind { return }
+            cellMap[idx] = BranchCell(col: c, row: r, ch: ch, kind: kind, colorIdx: colorIdx, swayWeight: sway)
+            // Cast soft shadow down-right onto pond water below
+            let sc = c + 4, sr = r + 2
+            if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
+                let sIdx = sr * cols + sc
+                if shadowSet.insert(sIdx).inserted {
+                    branchShadowCells.append((col: sc, row: sr, ch: kind >= 2 ? "·" : ":", swayWeight: sway))
+                }
+            }
+        }
+
+        // Helper: rasterize a quadratic Bezier wood segment with tapering thickness
+        func rasterizeWood(p0: CGPoint, p1: CGPoint, p2: CGPoint, rStart: CGFloat, rEnd: CGFloat, swayStart: CGFloat, swayEnd: CGFloat, steps: Int) {
+            for i in 0...steps {
+                let t = CGFloat(i) / CGFloat(steps)
+                let mt = 1 - t
+                let x = mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x
+                let y = mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
+                let tx = 2 * mt * (p1.x - p0.x) + 2 * t * (p2.x - p1.x)
+                let ty = 2 * mt * (p1.y - p0.y) + 2 * t * (p2.y - p1.y)
+                let len = max(0.001, hypot(tx, ty))
+                let nx = -ty / len, ny = tx / len
+                let rad = rStart + (rEnd - rStart) * t
+                let sway = swayStart + (swayEnd - swayStart) * t
+
+                var ang = atan2(ty, tx).truncatingRemainder(dividingBy: .pi)
+                if ang < 0 { ang += .pi }
+                let twigCh: Character = (ang < .pi / 8 || ang >= 7 * .pi / 8) ? "=" : (ang < 3 * .pi / 8 ? "\\" : (ang < 5 * .pi / 8 ? "|" : "/"))
+
+                let samples = max(1, Int(ceil(rad / 3.0)))
+                for k in -samples...samples {
+                    let frac = CGFloat(k) / CGFloat(max(1, samples))
+                    let ox = nx * frac * rad
+                    let oy = ny * frac * rad
+                    let isEdge = abs(frac) > 0.65
+                    let ch: Character = rad > 5.5 ? (isEdge ? "%" : "#") : (rad > 2.8 ? "=" : twigCh)
+                    let kind: UInt8 = (frac < -0.25 && rad > 3.5) ? 1 : 0
+                    putCell(px: x + ox, py: y + oy, ch: ch, kind: kind, colorIdx: 0, sway: sway)
+                }
+            }
+        }
+
+        // Helper: deterministic blossom / foliage cluster around a twig point
+        func addFoliageCluster(center: CGPoint, radius: CGFloat, sway: CGFloat, seed: Int) {
+            branchTipPoints.append(center)
+            let isWinter = actSeason == "winter"
+            let count = isWinter ? 9 : 22
+            for k in 0..<count {
+                let h1 = hash2(CGFloat(seed * 31 + k), 7.3)
+                let h2 = hash2(CGFloat(seed * 17 + k), 19.1)
+                let h3 = hash2(CGFloat(seed * 13 + k), 41.7)
+                let ang = h1 * 2.0 * .pi
+                let dist = sqrt(h2) * radius
+                let px = center.x + cos(ang) * dist
+                let py = center.y + sin(ang) * dist * 0.85
+                let isBright = h3 > 0.56
+                let ch: Character
+                if isWinter {
+                    ch = isBright ? "*" : "·"
+                } else if actSeason == "spring" {
+                    ch = isBright ? (h3 > 0.80 ? "@" : "*") : (h3 > 0.30 ? "+" : "·")
+                } else {
+                    ch = isBright ? (h3 > 0.78 ? "*" : "#") : (h3 > 0.32 ? "%" : "+")
+                }
+                let colorIdx = Int(h3 * 3.0) % 3
+                putCell(px: px, py: py, ch: ch, kind: isBright ? 3 : 2, colorIdx: colorIdx, sway: sway)
+            }
+        }
+
+        // 1. Main curved bonsai/sakura bough reaching gracefully over the pond
+        let m0 = toWorld(-0.04, 0.08)
+        let m1 = toWorld(0.42, 0.22)
+        let m2 = toWorld(0.94, 0.62)
+        rasterizeWood(p0: m0, p1: m1, p2: m2, rStart: 10.5 * s, rEnd: 1.8 * s, swayStart: 0.0, swayEnd: 1.0, steps: 64)
+
+        // 2. Three organic sub-branches forking outward
+        let b1Start = toWorld(0.26, 0.17), b1Ctrl = toWorld(0.48, 0.04), b1End = toWorld(0.84, 0.14)
+        rasterizeWood(p0: b1Start, p1: b1Ctrl, p2: b1End, rStart: 5.2 * s, rEnd: 1.4 * s, swayStart: 0.25, swayEnd: 0.95, steps: 36)
+
+        let b2Start = toWorld(0.40, 0.26), b2Ctrl = toWorld(0.32, 0.54), b2End = toWorld(0.44, 0.88)
+        rasterizeWood(p0: b2Start, p1: b2Ctrl, p2: b2End, rStart: 4.8 * s, rEnd: 1.4 * s, swayStart: 0.35, swayEnd: 0.95, steps: 36)
+
+        let b3Start = toWorld(0.66, 0.42), b3Ctrl = toWorld(0.82, 0.32), b3End = toWorld(1.00, 0.36)
+        rasterizeWood(p0: b3Start, p1: b3Ctrl, p2: b3End, rStart: 3.4 * s, rEnd: 1.2 * s, swayStart: 0.60, swayEnd: 1.0, steps: 24)
+
+        // 3. Seasonal blossom / foliage clusters along the twigs & tips
+        let clusters: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
+            (0.24, 0.14, 24, 0.22), (0.48, 0.09, 26, 0.48), (0.68, 0.10, 25, 0.72), (0.85, 0.15, 28, 0.95),
+            (0.35, 0.46, 24, 0.50), (0.39, 0.68, 26, 0.75), (0.44, 0.88, 27, 0.95),
+            (0.56, 0.34, 26, 0.55), (0.76, 0.48, 28, 0.80), (0.94, 0.62, 30, 1.00),
+            (0.84, 0.34, 24, 0.85), (1.00, 0.37, 26, 1.00)
+        ]
+        for (idx, cl) in clusters.enumerated() {
+            addFoliageCluster(center: toWorld(cl.0, cl.1), radius: cl.2 * s, sway: cl.3, seed: idx + 1)
+        }
+
+        branchCells = Array(cellMap.values)
+    }
+
     private func flushGlyphBatches(in ctx: CGContext) {
         for key in batchKeys {
             guard let glyphs = batchGlyphs[key], let positions = batchPositions[key], !glyphs.isEmpty else { continue }
@@ -2758,6 +2930,41 @@ final class PondEngine {
                     if fc >= 0 && fc < cols && fr >= 0 && fr < rows {
                         drawGlyph(ctx, glow > 0.72 ? "*" : "·", col: fc, row: fr, r: pal.firefly.r, g: pal.firefly.g, b: pal.firefly.b, a: glow * mult)
                     }
+                }
+            }
+        }
+
+        // Overhanging corner tree branch + soft cast shadow (pre-rasterized -> ~0.1ms/frame!)
+        if !config.minimalistMode && config.treeBranch != "none" {
+            ensureTreeBranchCache(season: actSeason)
+            let breeze = sin(time * 0.85) * 1.15
+            let barkDark = config.monoMode ? pal.stone : RGB(78, 56, 44)
+            let barkLight = config.monoMode ? pal.ripple : RGB(118, 86, 66)
+            let branchPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
+            let isWinter = actSeason == "winter"
+
+            // 1. Cast shadow on pond water below
+            for sh in branchShadowCells {
+                let sc = sh.col + Int(round(breeze * sh.swayWeight))
+                if sc >= 0 && sc < cols {
+                    drawGlyph(ctx, sh.ch, col: sc, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.82)
+                }
+            }
+            // 2. Branch wood & seasonal blossoms/foliage
+            for bc in branchCells {
+                let cc = bc.col + Int(round(breeze * bc.swayWeight))
+                guard cc >= 0 && cc < cols else { continue }
+                switch bc.kind {
+                case 0:
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkDark.r, g: barkDark.g, b: barkDark.b, a: 0.96)
+                case 1:
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkLight.r, g: barkLight.g, b: barkLight.b, a: 0.96)
+                case 2:
+                    let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.86, g: rgb.g * 0.86, b: rgb.b * 0.86, a: 0.94)
+                default:
+                    let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * 1.15), g: min(1, rgb.g * 1.15), b: min(1, rgb.b * 1.15), a: 0.98)
                 }
             }
         }
