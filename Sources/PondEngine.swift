@@ -391,6 +391,11 @@ final class PondEngine {
     private var musicHold: CGFloat = 0
     private var beatCounter: Int = 0
     private var musicNoteCooldown: CGFloat = 0
+    // Phase-locked BPM rhythm tracker for smooth, steady head turns
+    private var estimatedBeatInterval: CGFloat = 0.55 // ~109 BPM default until locked
+    private var rhythmTimer: CGFloat = 0
+    private var lastRealBeatTime: CGFloat = -10
+    private var lastRhythmFlipTime: CGFloat = -10
 
     private var time: CGFloat = 0
     private var rainTimer: CGFloat = 0
@@ -406,7 +411,29 @@ final class PondEngine {
         isMusicPlaying = playing
         audioBass = bass
         if config.musicReactive && beatHit > 0.1 {
-            beatSide = -beatSide // Flip Left <-> Right on EVERY beat (e.g. 107 turns/min at 107 BPM!)
+            // Update tempo tracker (BPM inter-beat interval) from real bass hits
+            let delta = time - lastRealBeatTime
+            if delta >= 0.36 && delta <= 0.85 {
+                // Direct quarter-note beat interval (70–166 BPM)
+                estimatedBeatInterval = estimatedBeatInterval * 0.72 + delta * 0.28
+            } else if delta > 0.85 && delta <= 1.65 {
+                // Missed one beat (2-beat gap): halve to keep true BPM locked
+                let half = delta * 0.5
+                estimatedBeatInterval = estimatedBeatInterval * 0.82 + half * 0.18
+            }
+            lastRealBeatTime = time
+
+            // Phase-lock the rhythm clock onto the real beat without double-flipping
+            let sinceFlip = time - lastRhythmFlipTime
+            if sinceFlip >= estimatedBeatInterval * 0.58 {
+                beatSide = -beatSide
+                lastRhythmFlipTime = time
+                rhythmTimer = 0
+            } else if sinceFlip < estimatedBeatInterval * 0.30 {
+                // Just flipped slightly early — pull phase gently back into alignment
+                rhythmTimer = 0
+            }
+
             beatCounter += 1
             beatEnergy = max(beatEnergy, min(1.0, beatHit))
             musicHold = 1.0
@@ -852,7 +879,8 @@ final class PondEngine {
             }
         } else {
             // Agents finished — bring ambient pond Koi back in smoothly from the edges!
-            let ambientCount = fishes.filter { $0.agentId == nil && !$0.isTrashEater && !$0.leaving }.count
+            // Count ALL ambient Koi (including ones currently leaving) so cycling Koi never exceed koiCount
+            let ambientCount = fishes.filter { $0.agentId == nil && !$0.isTrashEater }.count
             let targetAmbient = max(1, min(5, config.koiCount))
             if ambientCount < targetAmbient {
                 for _ in 0..<(targetAmbient - ambientCount) {
@@ -1039,16 +1067,24 @@ final class PondEngine {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
 
-        // Smoothly swing head Left <-> Right on each real beat and hold until next beat (or silence)
+        // Tempo-locked rhythm clock: keeps Koi heads turning Left <-> Right in steady BPM rhythm
         musicNoteCooldown = max(0, musicNoteCooldown - dt)
-        if config.musicReactive {
+        if config.musicReactive && isMusicPlaying && (time - lastRealBeatTime) < 2.8 {
             beatEnergy *= exp(-4.8 * dt)
-            musicHold = max(0, musicHold - dt * 0.65)
-            let targetNod = beatSide * min(1.0, musicHold * 1.4)
-            beatNod += (targetNod - beatNod) * min(1.0, dt * 36.0)
+            rhythmTimer += dt
+            if rhythmTimer >= estimatedBeatInterval {
+                rhythmTimer -= estimatedBeatInterval
+                beatSide = -beatSide
+                lastRhythmFlipTime = time
+                musicHold = 1.0
+            }
+            musicHold = max(0, musicHold - dt * 0.45)
+            let targetNod = beatSide * min(1.0, musicHold * 1.35)
+            beatNod += (targetNod - beatNod) * min(1.0, dt * 28.0)
         } else {
             beatEnergy = 0
             musicHold = 0
+            rhythmTimer = 0
             beatNod *= exp(-8.0 * dt)
         }
 
@@ -1070,7 +1106,8 @@ final class PondEngine {
                     rn.x <= -padOut || rn.x >= width + padOut || rn.y <= -padOut || rn.y >= height + padOut
                 }
                 if allOut {
-                    if fishes[fIdx].agentId != nil || fishes[fIdx].isTrashEater || agentsActive {
+                    let totalAmbient = fishes.filter { $0.agentId == nil && !$0.isTrashEater }.count
+                    if fishes[fIdx].agentId != nil || fishes[fIdx].isTrashEater || agentsActive || totalAmbient > config.koiCount {
                         fishes.remove(at: fIdx)
                     } else {
                         fishes[fIdx] = spawnKoiFromEdge()
