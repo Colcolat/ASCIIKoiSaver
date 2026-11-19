@@ -14,6 +14,8 @@ final class AgentMonitor {
 
     var onAgentsChanged: (([AgentDescriptor]) -> Void)?
     private var timer: Timer?
+    private let bgQueue = DispatchQueue(label: "com.jj.ASCIIKoiDesktop.agentMonitor", qos: .utility)
+    private let lock = NSLock()
     private var manualDemos: [AgentDescriptor] = []
     private var lastReported: [AgentDescriptor] = []
 
@@ -38,9 +40,9 @@ final class AgentMonitor {
     // MARK: - Demo / Test Triggers from Menu Bar
 
     func toggleDemo(model: AgentModel, state: AgentState, withSubagents: Bool = false) {
+        lock.lock()
         let mainId = "demo-\(model.rawValue)"
         if manualDemos.contains(where: { $0.id == mainId }) {
-            // Transition to done so the Koi performs its triumphant jump and swims away!
             manualDemos.removeAll { $0.id == mainId || $0.id.hasPrefix("\(mainId)-sub-") }
         } else {
             manualDemos.append(AgentDescriptor(id: mainId, model: model, state: state, isSubagent: false, parentId: nil, formationSlot: 0))
@@ -49,78 +51,89 @@ final class AgentMonitor {
                 manualDemos.append(AgentDescriptor(id: "\(mainId)-sub-2", model: model, state: .editing, isSubagent: true, parentId: mainId, formationSlot: 1))
             }
         }
+        lock.unlock()
         poll()
     }
 
     func cycleDemoStates() {
+        lock.lock()
         let order: [AgentState] = [.thinking, .editing, .waiting, .error]
         for i in 0..<manualDemos.count {
             let cur = manualDemos[i].state
             let nextIdx = ((order.firstIndex(of: cur) ?? 0) + 1) % order.count
             manualDemos[i].state = order[nextIdx]
         }
+        lock.unlock()
         poll()
     }
 
     func clearDemos() {
+        lock.lock()
         manualDemos.removeAll()
+        lock.unlock()
         poll()
     }
 
-    // MARK: - Polling
+    // MARK: - Polling (Always on background queue — never blocks UI!)
 
     private func poll() {
-        var detected: [AgentDescriptor] = manualDemos
+        bgQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let demosSnapshot = self.manualDemos
+            self.lock.unlock()
 
-        // 1. Hook JSON file (~/.ascii-koi/agents.json)
-        if let data = try? Data(contentsOf: hookFileURL),
-           let entries = try? JSONDecoder().decode([HookEntry].self, from: data) {
-            for e in entries {
-                let model: AgentModel = e.model.lowercased().contains("claude") ? .claude : .gemini
-                let state = AgentState(rawValue: e.state.lowercased()) ?? .thinking
-                let mainHookId = "hook-\(e.id)"
-                detected.append(AgentDescriptor(id: mainHookId, model: model, state: state, isSubagent: false, parentId: nil, formationSlot: 0))
-                let subs = max(0, min(4, e.subagents ?? 0))
-                for s in 0..<subs {
-                    detected.append(AgentDescriptor(id: "\(mainHookId)-sub-\(s)", model: model, state: .thinking, isSubagent: true, parentId: mainHookId, formationSlot: s))
+            var detected: [AgentDescriptor] = demosSnapshot
+
+            // 1. Hook JSON file (~/.ascii-koi/agents.json)
+            if let data = try? Data(contentsOf: self.hookFileURL),
+               let entries = try? JSONDecoder().decode([HookEntry].self, from: data) {
+                for e in entries {
+                    let model: AgentModel = e.model.lowercased().contains("claude") ? .claude : .gemini
+                    let state = AgentState(rawValue: e.state.lowercased()) ?? .thinking
+                    let mainHookId = "hook-\(e.id)"
+                    detected.append(AgentDescriptor(id: mainHookId, model: model, state: state, isSubagent: false, parentId: nil, formationSlot: 0))
+                    let subs = max(0, min(4, e.subagents ?? 0))
+                    for s in 0..<subs {
+                        detected.append(AgentDescriptor(id: "\(mainHookId)-sub-\(s)", model: model, state: .thinking, isSubagent: true, parentId: mainHookId, formationSlot: s))
+                    }
                 }
             }
-        }
 
-        // 2. Passive CLI process detection (claude / gemini)
-        if manualDemos.isEmpty {
-            let runningProcs = detectRunningCLIs()
-            for (idx, model) in runningProcs.enumerated() {
-                let isSub = idx > 0
-                detected.append(AgentDescriptor(
-                    id: "cli-\(model.rawValue)-\(idx)",
-                    model: model,
-                    state: .editing,
-                    isSubagent: isSub,
-                    parentId: isSub ? "cli-\(model.rawValue)-0" : nil,
-                    formationSlot: max(0, idx - 1)
-                ))
+            // 2. Passive CLI & Antigravity detection (only when not testing demos)
+            if demosSnapshot.isEmpty {
+                let runningProcs = self.detectRunningCLIs()
+                for (idx, model) in runningProcs.enumerated() {
+                    let isSub = idx > 0
+                    detected.append(AgentDescriptor(
+                        id: "cli-\(model.rawValue)-\(idx)",
+                        model: model,
+                        state: .editing,
+                        isSubagent: isSub,
+                        parentId: isSub ? "cli-\(model.rawValue)-0" : nil,
+                        formationSlot: max(0, idx - 1)
+                    ))
+                }
+
+                let activeBrains = self.detectRecentAntigravityActivity()
+                for idx in 0..<activeBrains {
+                    let isSub = idx > 0
+                    detected.append(AgentDescriptor(
+                        id: "agy-brain-\(idx)",
+                        model: .gemini,
+                        state: idx == 0 ? .thinking : .editing,
+                        isSubagent: isSub,
+                        parentId: isSub ? "agy-brain-0" : nil,
+                        formationSlot: max(0, idx - 1)
+                    ))
+                }
             }
 
-            // 3. Passive Antigravity brain transcript activity (modified in last 14 seconds)
-            let activeBrains = detectRecentAntigravityActivity()
-            for idx in 0..<activeBrains {
-                let isSub = idx > 0
-                detected.append(AgentDescriptor(
-                    id: "agy-brain-\(idx)",
-                    model: .gemini,
-                    state: idx == 0 ? .thinking : .editing,
-                    isSubagent: isSub,
-                    parentId: isSub ? "agy-brain-0" : nil,
-                    formationSlot: max(0, idx - 1)
-                ))
-            }
-        }
-
-        if detected != lastReported {
-            lastReported = detected
-            DispatchQueue.main.async { [weak self] in
-                self?.onAgentsChanged?(detected)
+            if detected != self.lastReported {
+                self.lastReported = detected
+                DispatchQueue.main.async { [weak self] in
+                    self?.onAgentsChanged?(detected)
+                }
             }
         }
     }
@@ -133,8 +146,10 @@ final class AgentMonitor {
         task.standardOutput = pipe
         task.standardError = FileHandle.nullDevice
         guard (try? task.run()) != nil else { return [] }
+        // IMPORTANT: Always drain pipe BEFORE waitUntilExit() so large ps output never deadlocks!
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         task.waitUntilExit()
-        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let out = String(data: data, encoding: .utf8) ?? ""
         var found: [AgentModel] = []
         for line in out.split(separator: "\n") {
             let name = URL(fileURLWithPath: String(line).trimmingCharacters(in: .whitespaces)).lastPathComponent.lowercased()

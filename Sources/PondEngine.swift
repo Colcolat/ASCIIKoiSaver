@@ -1313,9 +1313,9 @@ final class PondEngine {
             let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
             var sway = sin(fish.phase - t * 6.5) * amp
             if isGrooving {
-                // Distinct rhythmic head-bob & body-wag to the music beat!
-                let headBob = sin(musicBeatPhase + fish.seed * 0.25) * (8.5 * (1.0 - t * 0.55) * fish.scale)
-                let bodyGroove = sin(musicBeatPhase * 1.0 - t * 5.2) * (6.5 * fish.scale)
+                // Unmistakable rhythmic head-bob & full-body wag dancing to the music beat!
+                let headBob = sin(musicBeatPhase + fish.seed * 0.25) * (15.5 * (1.0 - t * 0.45) * fish.scale)
+                let bodyGroove = sin(musicBeatPhase * 1.0 - t * 5.6) * (10.5 * fish.scale)
                 sway += headBob + bodyGroove
             }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
