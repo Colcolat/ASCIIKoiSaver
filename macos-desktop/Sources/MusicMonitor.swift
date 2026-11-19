@@ -90,7 +90,7 @@ final class MusicMonitor {
             kAudioAggregateDeviceTapListKey as String: [
                 [
                     kAudioSubTapUIDKey as String: tapDesc.uuid.uuidString,
-                    kAudioSubTapDriftCompensationKey as String: true
+                    kAudioSubTapDriftCompensationKey as String: false
                 ]
             ]
         ]
@@ -105,6 +105,15 @@ final class MusicMonitor {
             return
         }
         aggregateDeviceID = createdAgg
+
+        // Request low-latency 256-frame audio buffer (~5ms at 48kHz)
+        var bufferFrames: UInt32 = 256
+        var bufAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        AudioObjectSetPropertyData(aggregateDeviceID, &bufAddr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &bufferFrames)
 
         var procID: AudioDeviceIOProcID?
         let ioErr = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateDeviceID, ioQueue) { [weak self] _, inInputData, _, _, _ in
@@ -168,9 +177,9 @@ final class MusicMonitor {
         let normalizedBass = min(1.0, CGFloat(bassRMS / max(0.015, avgBass * 2.2)))
         currentBassLevel = currentBassLevel * 0.65 + normalizedBass * 0.35
 
-        // Detect sharp bass/kick onset (real beat hit!) with 0.34s spacing so quarter-note beats lock cleanly
-        let threshold = max(0.009, avgBass * 1.35)
-        if bassRMS > threshold && (now - lastBeatTime) > 0.34 {
+        // Detect sharp bass/kick onset on the leading attack transient with 0.28s spacing
+        let threshold = max(0.0075, avgBass * 1.26)
+        if bassRMS > threshold && (now - lastBeatTime) > 0.28 {
             lastBeatTime = now
             let strength = min(1.0, CGFloat((bassRMS - avgBass) / max(0.01, avgBass * 1.4)))
             pendingBeatStrength = max(pendingBeatStrength, max(0.45, strength))

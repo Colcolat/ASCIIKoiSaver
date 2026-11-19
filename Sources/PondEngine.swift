@@ -1045,7 +1045,7 @@ final class PondEngine {
             beatEnergy *= exp(-4.8 * dt)
             musicHold = max(0, musicHold - dt * 0.65)
             let targetNod = beatSide * min(1.0, musicHold * 1.4)
-            beatNod += (targetNod - beatNod) * min(1.0, dt * 16.0)
+            beatNod += (targetNod - beatNod) * min(1.0, dt * 36.0)
         } else {
             beatEnergy = 0
             musicHold = 0
@@ -1350,10 +1350,10 @@ final class PondEngine {
             let nx = -ty, ny = tx
             let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
             var sway = sin(fish.phase - t * 6.5) * amp
-            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.42 {
-                // Deliberate head turn pivoting around the shoulders (Left on beat 1 -> Right on beat 2 -> ...)
-                let headFactor = pow(1.0 - (t / 0.42), 1.35)
-                sway += beatNod * (16.5 * headFactor * fish.scale)
+            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.46 {
+                // Strong, snappy head turn pivoting around the shoulders (Left on beat 1 -> Right on beat 2 -> ...)
+                let headFactor = pow(1.0 - (t / 0.46), 1.25)
+                sway += beatNod * (28.5 * headFactor * fish.scale)
             }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
         }
