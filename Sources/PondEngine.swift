@@ -1065,17 +1065,17 @@ final class PondEngine {
         var vx: CGFloat
         var vy: CGFloat
 
-        if config.treeBranch != "none" && !config.minimalistMode && !branchTipPoints.isEmpty && CGFloat.random(in: 0...1) < 0.72 {
-            // Detach petal/leaf directly from the overhanging corner tree branch!
+        if config.treeBranch != "none" && !config.minimalistMode && !branchTipPoints.isEmpty && CGFloat.random(in: 0...1) < 0.78 {
+            // Detach petal/leaf gently from a blossom/foliage cluster on the overhanging tree branch
             let tip = branchTipPoints[Int.random(in: 0..<branchTipPoints.count)]
-            startX = tip.x + CGFloat.random(in: -10...10) * s
-            startY = tip.y + CGFloat.random(in: -10...10) * s
-            startZ = CGFloat.random(in: 1.55...1.85)
-            // Drift gently inward from the branch's corner toward the open pond
+            startX = tip.x + CGFloat.random(in: -14...14) * s
+            startY = tip.y + CGFloat.random(in: -12...12) * s
+            startZ = CGFloat.random(in: 1.78...2.05)
+            // Gentle inward breeze drift away from the branch corner (peels off smoothly via age ramp!)
             let dirX: CGFloat = (config.treeBranch == "topRight" || config.treeBranch == "bottomRight") ? -1.0 : 1.0
-            let dirY: CGFloat = (config.treeBranch == "bottomRight" || config.treeBranch == "bottomLeft") ? -0.45 : 0.75
-            vx = (dirX * CGFloat.random(in: 16...36) + CGFloat.random(in: -8...8)) * s
-            vy = (dirY * CGFloat.random(in: 14...28) + CGFloat.random(in: -6...6)) * s
+            let dirY: CGFloat = (config.treeBranch == "bottomRight" || config.treeBranch == "bottomLeft") ? -0.35 : 0.65
+            vx = (dirX * CGFloat.random(in: 14...30) + CGFloat.random(in: -6...6)) * s
+            vy = (dirY * CGFloat.random(in: 10...22) + CGFloat.random(in: -5...5)) * s
         } else {
             let fromTop = Bool.random()
             startX = fromTop ? CGFloat.random(in: 0...(width * 0.85)) : -52 * s
@@ -1089,10 +1089,10 @@ final class PondEngine {
             x: startX, y: startY,
             z: startZ,
             vx: vx, vy: vy,
-            rot: CGFloat.random(in: 0...(2 * .pi)), rotSpd: CGFloat.random(in: -0.8...0.8),
-            tumble: CGFloat.random(in: 0...(2 * .pi)), tumbleSpd: CGFloat.random(in: 2.2...3.6),
+            rot: CGFloat.random(in: 0...(2 * .pi)), rotSpd: CGFloat.random(in: -0.75...0.75),
+            tumble: CGFloat.random(in: 0...(2 * .pi)), tumbleSpd: CGFloat.random(in: 1.8...3.1),
             swayPhase: CGFloat.random(in: 0...(2 * .pi)), colorIdx: Int.random(in: 0..<3),
-            size: (isWinter ? CGFloat.random(in: 13...19) : CGFloat.random(in: 24...36)) * s,
+            size: (isWinter ? CGFloat.random(in: 12...18) : CGFloat.random(in: 20...30)) * s,
             maple: CGFloat.random(in: 0...1) > 0.25, isSnow: isWinter,
             floating: false, age: 0, maxAge: isWinter ? 0.2 : CGFloat.random(in: 34...50)
         ))
@@ -1712,12 +1712,16 @@ final class PondEngine {
             lf.swayPhase += dt * (lf.floating ? 1.1 : 3.4)
             lf.rot += lf.rotSpd * dt
             if !lf.floating {
-                lf.z -= dt * (lf.isSnow ? 0.46 : 0.34)
-                lf.tumble += lf.tumbleSpd * dt
-                lf.x += (lf.vx + sin(lf.swayPhase) * 34) * dt
-                lf.y += (lf.vy + cos(lf.swayPhase * 0.85) * 18) * dt
+                // Natural peel-off acceleration: starts softly from branch tip, then catches the breeze & flutters down
+                lf.age += dt
+                let peel = min(1.0, lf.age / 0.75)
+                let ease = peel * peel * (3.0 - 2.0 * peel)
+                lf.z -= dt * (lf.isSnow ? 0.44 : 0.28) * (0.35 + 0.65 * ease)
+                lf.tumble += lf.tumbleSpd * (0.45 + 0.55 * ease) * dt
+                lf.x += (lf.vx * (0.25 + 0.75 * ease) + sin(lf.swayPhase) * 32 * ease) * dt
+                lf.y += (lf.vy * (0.25 + 0.75 * ease) + cos(lf.swayPhase * 0.82) * 16 * ease) * dt
                 if lf.z <= 1.0 {
-                    lf.z = 1.0; lf.floating = true; lf.rotSpd *= 0.18
+                    lf.z = 1.0; lf.floating = true; lf.age = 0; lf.rotSpd *= 0.18
                     ripples.append(Ripple(x: lf.x, y: lf.y, r: 3, maxR: lf.isSnow ? 20 : 42, alpha: lf.isSnow ? 0.58 : 0.85))
                     if !lf.isSnow { ripples.append(Ripple(x: lf.x, y: lf.y, r: 0.5, maxR: 25, alpha: 0.62)) }
                 }
@@ -2256,13 +2260,13 @@ final class PondEngine {
         guard config.treeBranch != "none", cols > 20, rows > 12 else { return }
 
         let s = screenScale()
-        let spanX = min(width * 0.27, 410 * s)
-        let spanY = min(height * 0.28, 285 * s)
+        let spanX = min(width * 0.38, 575 * s)
+        let spanY = min(height * 0.40, 395 * s)
 
         let isRight = (config.treeBranch == "topRight" || config.treeBranch == "bottomRight")
         let isBottom = (config.treeBranch == "bottomRight" || config.treeBranch == "bottomLeft")
-        let anchorX: CGFloat = isRight ? width + 6 : -6
-        let anchorY: CGFloat = isBottom ? height + 6 : -6
+        let anchorX: CGFloat = isRight ? width + 10 : -10
+        let anchorY: CGFloat = isBottom ? height + 10 : -10
         let dirX: CGFloat = isRight ? -1 : 1
         let dirY: CGFloat = isBottom ? -1 : 1
 
@@ -2278,11 +2282,10 @@ final class PondEngine {
             let c = Int(px / cellW), r = Int(py / cellH)
             guard c >= 0 && c < cols && r >= 0 && r < rows else { return }
             let idx = r * cols + c
-            // Foliage/blossoms render on top of bark; bark highlights on top of bark
             if let existing = cellMap[idx], existing.kind > kind { return }
             cellMap[idx] = BranchCell(col: c, row: r, ch: ch, kind: kind, colorIdx: colorIdx, swayWeight: sway)
-            // Cast soft shadow down-right onto pond water below
-            let sc = c + 4, sr = r + 2
+            // Soft cast shadow down-right on the pond surface below
+            let sc = c + 5, sr = r + 3
             if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
                 let sIdx = sr * cols + sc
                 if shadowSet.insert(sIdx).inserted {
@@ -2291,86 +2294,103 @@ final class PondEngine {
             }
         }
 
-        // Helper: rasterize a quadratic Bezier wood segment with tapering thickness
-        func rasterizeWood(p0: CGPoint, p1: CGPoint, p2: CGPoint, rStart: CGFloat, rEnd: CGFloat, swayStart: CGFloat, swayEnd: CGFloat, steps: Int) {
+        // Helper: rasterize a gnarled organic Bezier wood limb with 3-tone bark shading
+        func rasterizeWood(p0: CGPoint, p1: CGPoint, p2: CGPoint, rStart: CGFloat, rEnd: CGFloat, swayStart: CGFloat, swayEnd: CGFloat, steps: Int, gnarlSeed: CGFloat) {
             for i in 0...steps {
                 let t = CGFloat(i) / CGFloat(steps)
                 let mt = 1 - t
-                let x = mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x
-                let y = mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
+                var x = mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x
+                var y = mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
                 let tx = 2 * mt * (p1.x - p0.x) + 2 * t * (p2.x - p1.x)
                 let ty = 2 * mt * (p1.y - p0.y) + 2 * t * (p2.y - p1.y)
                 let len = max(0.001, hypot(tx, ty))
                 let nx = -ty / len, ny = tx / len
-                let rad = rStart + (rEnd - rStart) * t
+
+                // Subtle organic gnarl/knot undulation so the wood looks real, not geometric
+                let gnarl = (sin(t * 10.5 + gnarlSeed) * 2.6 + cos(t * 21.0 + gnarlSeed * 1.7) * 1.1) * s * (0.4 + 0.6 * t)
+                x += nx * gnarl
+                y += ny * gnarl
+
+                let rad = (rStart + (rEnd - rStart) * pow(t, 0.85)) * (1.0 + 0.10 * sin(t * 17.0 + gnarlSeed))
                 let sway = swayStart + (swayEnd - swayStart) * t
 
                 var ang = atan2(ty, tx).truncatingRemainder(dividingBy: .pi)
                 if ang < 0 { ang += .pi }
                 let twigCh: Character = (ang < .pi / 8 || ang >= 7 * .pi / 8) ? "=" : (ang < 3 * .pi / 8 ? "\\" : (ang < 5 * .pi / 8 ? "|" : "/"))
 
-                let samples = max(1, Int(ceil(rad / 3.0)))
+                let samples = max(1, Int(ceil(rad / 2.6)))
                 for k in -samples...samples {
                     let frac = CGFloat(k) / CGFloat(max(1, samples))
                     let ox = nx * frac * rad
                     let oy = ny * frac * rad
-                    let isEdge = abs(frac) > 0.65
-                    let ch: Character = rad > 5.5 ? (isEdge ? "%" : "#") : (rad > 2.8 ? "=" : twigCh)
-                    let kind: UInt8 = (frac < -0.25 && rad > 3.5) ? 1 : 0
+                    let ch: Character
+                    let kind: UInt8
+                    if rad > 7.0 {
+                        // Thick gnarled trunk/bough: sunlit upper edge, grooved center, deep underside
+                        if frac < -0.35 { ch = (i % 3 == 0 ? ":" : "="); kind = 1 }
+                        else if frac > 0.45 { ch = "@"; kind = 0 }
+                        else { ch = (i % 4 == 0 ? "%" : "#"); kind = 0 }
+                    } else if rad > 3.2 {
+                        ch = frac < -0.2 ? "=" : "#"
+                        kind = frac < -0.25 ? 1 : 0
+                    } else {
+                        ch = twigCh
+                        kind = 0
+                    }
                     putCell(px: x + ox, py: y + oy, ch: ch, kind: kind, colorIdx: 0, sway: sway)
                 }
             }
         }
 
-        // Helper: deterministic blossom / foliage cluster around a twig point
+        // Helper: layered organic foliage / blossom puff (dark inner core -> mid leaves -> sunlit outer petals)
         func addFoliageCluster(center: CGPoint, radius: CGFloat, sway: CGFloat, seed: Int) {
             branchTipPoints.append(center)
             let isWinter = actSeason == "winter"
-            let count = isWinter ? 9 : 22
+            let count = isWinter ? 14 : 34
             for k in 0..<count {
-                let h1 = hash2(CGFloat(seed * 31 + k), 7.3)
-                let h2 = hash2(CGFloat(seed * 17 + k), 19.1)
+                let h1 = hash2(CGFloat(seed * 37 + k), 7.3)
+                let h2 = hash2(CGFloat(seed * 19 + k), 19.1)
                 let h3 = hash2(CGFloat(seed * 13 + k), 41.7)
                 let ang = h1 * 2.0 * .pi
-                let dist = sqrt(h2) * radius
-                let px = center.x + cos(ang) * dist
-                let py = center.y + sin(ang) * dist * 0.85
-                let isBright = h3 > 0.56
+                // Elliptical layered puff shape for realistic canopy depth
+                let dist = pow(h2, 0.58) * radius
+                let px = center.x + cos(ang) * dist * 1.15
+                let py = center.y + sin(ang) * dist * 0.82
+                let isOuterTop = (sin(ang) < 0.15 && dist > radius * 0.35) || h3 > 0.68
                 let ch: Character
                 if isWinter {
-                    ch = isBright ? "*" : "·"
+                    ch = isOuterTop ? "*" : (h3 > 0.35 ? "+" : "·")
                 } else if actSeason == "spring" {
-                    ch = isBright ? (h3 > 0.80 ? "@" : "*") : (h3 > 0.30 ? "+" : "·")
+                    ch = isOuterTop ? (h3 > 0.72 ? "@" : "*") : (h3 > 0.38 ? "+" : (h3 > 0.15 ? "%" : "·"))
                 } else {
-                    ch = isBright ? (h3 > 0.78 ? "*" : "#") : (h3 > 0.32 ? "%" : "+")
+                    ch = isOuterTop ? (h3 > 0.70 ? "*" : "#") : (h3 > 0.35 ? "%" : "+")
                 }
                 let colorIdx = Int(h3 * 3.0) % 3
-                putCell(px: px, py: py, ch: ch, kind: isBright ? 3 : 2, colorIdx: colorIdx, sway: sway)
+                putCell(px: px, py: py, ch: ch, kind: isOuterTop ? 3 : 2, colorIdx: colorIdx, sway: sway)
             }
         }
 
-        // 1. Main curved bonsai/sakura bough reaching gracefully over the pond
-        let m0 = toWorld(-0.04, 0.08)
-        let m1 = toWorld(0.42, 0.22)
-        let m2 = toWorld(0.94, 0.62)
-        rasterizeWood(p0: m0, p1: m1, p2: m2, rStart: 10.5 * s, rEnd: 1.8 * s, swayStart: 0.0, swayEnd: 1.0, steps: 64)
+        // 1. Sturdy sweeping main bough reaching majestically out over the pond
+        rasterizeWood(p0: toWorld(-0.04, 0.06), p1: toWorld(0.40, 0.20), p2: toWorld(0.95, 0.58), rStart: 15.5 * s, rEnd: 2.0 * s, swayStart: 0.0, swayEnd: 1.0, steps: 80, gnarlSeed: 1.2)
 
-        // 2. Three organic sub-branches forking outward
-        let b1Start = toWorld(0.26, 0.17), b1Ctrl = toWorld(0.48, 0.04), b1End = toWorld(0.84, 0.14)
-        rasterizeWood(p0: b1Start, p1: b1Ctrl, p2: b1End, rStart: 5.2 * s, rEnd: 1.4 * s, swayStart: 0.25, swayEnd: 0.95, steps: 36)
+        // 2. Four organic secondary limbs forking outward at natural angles
+        rasterizeWood(p0: toWorld(0.20, 0.13), p1: toWorld(0.46, 0.02), p2: toWorld(0.86, 0.10), rStart: 7.5 * s, rEnd: 1.5 * s, swayStart: 0.20, swayEnd: 0.95, steps: 46, gnarlSeed: 3.1)
+        rasterizeWood(p0: toWorld(0.32, 0.21), p1: toWorld(0.24, 0.54), p2: toWorld(0.36, 0.92), rStart: 7.0 * s, rEnd: 1.5 * s, swayStart: 0.30, swayEnd: 0.95, steps: 46, gnarlSeed: 5.4)
+        rasterizeWood(p0: toWorld(0.56, 0.34), p1: toWorld(0.76, 0.22), p2: toWorld(0.98, 0.28), rStart: 5.2 * s, rEnd: 1.3 * s, swayStart: 0.52, swayEnd: 1.0, steps: 34, gnarlSeed: 7.8)
+        rasterizeWood(p0: toWorld(0.68, 0.43), p1: toWorld(0.60, 0.68), p2: toWorld(0.70, 0.88), rStart: 4.2 * s, rEnd: 1.2 * s, swayStart: 0.65, swayEnd: 1.0, steps: 30, gnarlSeed: 9.6)
 
-        let b2Start = toWorld(0.40, 0.26), b2Ctrl = toWorld(0.32, 0.54), b2End = toWorld(0.44, 0.88)
-        rasterizeWood(p0: b2Start, p1: b2Ctrl, p2: b2End, rStart: 4.8 * s, rEnd: 1.4 * s, swayStart: 0.35, swayEnd: 0.95, steps: 36)
+        // 3. Fine tertiary twigs for delicate silhouette detail
+        rasterizeWood(p0: toWorld(0.52, 0.07), p1: toWorld(0.64, 0.16), p2: toWorld(0.76, 0.18), rStart: 2.6 * s, rEnd: 1.0 * s, swayStart: 0.55, swayEnd: 0.92, steps: 18, gnarlSeed: 11.2)
+        rasterizeWood(p0: toWorld(0.29, 0.52), p1: toWorld(0.16, 0.68), p2: toWorld(0.14, 0.84), rStart: 2.6 * s, rEnd: 1.0 * s, swayStart: 0.50, swayEnd: 0.90, steps: 18, gnarlSeed: 13.7)
+        rasterizeWood(p0: toWorld(0.80, 0.49), p1: toWorld(0.92, 0.44), p2: toWorld(1.02, 0.48), rStart: 2.2 * s, rEnd: 1.0 * s, swayStart: 0.80, swayEnd: 1.0, steps: 16, gnarlSeed: 15.1)
 
-        let b3Start = toWorld(0.66, 0.42), b3Ctrl = toWorld(0.82, 0.32), b3End = toWorld(1.00, 0.36)
-        rasterizeWood(p0: b3Start, p1: b3Ctrl, p2: b3End, rStart: 3.4 * s, rEnd: 1.2 * s, swayStart: 0.60, swayEnd: 1.0, steps: 24)
-
-        // 3. Seasonal blossom / foliage clusters along the twigs & tips
+        // 4. Lush layered foliage / blossom clusters along every limb & twig tip
         let clusters: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
-            (0.24, 0.14, 24, 0.22), (0.48, 0.09, 26, 0.48), (0.68, 0.10, 25, 0.72), (0.85, 0.15, 28, 0.95),
-            (0.35, 0.46, 24, 0.50), (0.39, 0.68, 26, 0.75), (0.44, 0.88, 27, 0.95),
-            (0.56, 0.34, 26, 0.55), (0.76, 0.48, 28, 0.80), (0.94, 0.62, 30, 1.00),
-            (0.84, 0.34, 24, 0.85), (1.00, 0.37, 26, 1.00)
+            (0.16, 0.10, 30, 0.18), (0.38, 0.08, 34, 0.38), (0.60, 0.06, 32, 0.62), (0.85, 0.11, 34, 0.95),
+            (0.75, 0.19, 28, 0.80), (0.98, 0.28, 32, 1.00), (0.80, 0.28, 30, 0.78),
+            (0.28, 0.42, 32, 0.42), (0.15, 0.78, 28, 0.82), (0.34, 0.68, 32, 0.72), (0.38, 0.91, 34, 0.96),
+            (0.48, 0.30, 34, 0.48), (0.68, 0.42, 34, 0.68), (0.64, 0.66, 30, 0.82), (0.71, 0.87, 32, 0.98),
+            (0.88, 0.54, 34, 0.92), (0.97, 0.60, 32, 1.00), (1.01, 0.48, 26, 1.00)
         ]
         for (idx, cl) in clusters.enumerated() {
             addFoliageCluster(center: toWorld(cl.0, cl.1), radius: cl.2 * s, sway: cl.3, seed: idx + 1)
@@ -2818,7 +2838,8 @@ final class PondEngine {
         let leafPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
         for lf in (config.minimalistMode ? [] : leaves) {
             let h = max(0, lf.z - 1.0)
-            let fadeOut: CGFloat = (lf.floating && lf.age > lf.maxAge - 3) ? max(0, (lf.maxAge - lf.age) / 3) : 1
+            let fadeIn: CGFloat = lf.floating ? 1.0 : min(1.0, lf.age / 0.45)
+            let fadeOut: CGFloat = fadeIn * ((lf.floating && lf.age > lf.maxAge - 3) ? max(0, (lf.maxAge - lf.age) / 3) : 1)
             let drawR = lf.size * (1.0 + h * 0.52)
             let tiltY: CGFloat = lf.floating ? 1.0 : (0.58 + 0.42 * abs(cos(lf.tumble)))
             let cCos = cos(-lf.rot), cSin = sin(-lf.rot)
