@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ServiceManagement
 
 @main
 final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
@@ -138,6 +139,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         config.minimalistMode = d.bool(forKey: "minimalistMode")
         config.musicReactive = d.object(forKey: "musicReactive") == nil ? true : d.bool(forKey: "musicReactive")
         config.treeBranch = d.string(forKey: "treeBranch") ?? "bottomRight"
+        config.pondAccent = d.string(forKey: "pondAccent") ?? "bridge"
         liveWeatherEnabled = d.object(forKey: "liveWeather") == nil ? true : d.bool(forKey: "liveWeather")
         wallpaper.autoLowPowerOnBattery = d.object(forKey: "autoLowPower") == nil ? true : d.bool(forKey: "autoLowPower")
         wallpaper.desktopClicksEnabled = d.object(forKey: "desktopClicks") == nil ? true : d.bool(forKey: "desktopClicks")
@@ -154,6 +156,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         d.set(config.minimalistMode, forKey: "minimalistMode")
         d.set(config.musicReactive, forKey: "musicReactive")
         d.set(config.treeBranch, forKey: "treeBranch")
+        d.set(config.pondAccent, forKey: "pondAccent")
         d.set(liveWeatherEnabled, forKey: "liveWeather")
         d.set(wallpaper.autoLowPowerOnBattery, forKey: "autoLowPower")
         d.set(wallpaper.desktopClicksEnabled, forKey: "desktopClicks")
@@ -277,6 +280,23 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         branchItem.submenu = branchSub
         menu.addItem(branchItem)
 
+        // Zen Garden Accent Submenu (Wooden Bridge vs Stepping Stones)
+        let accentSub = NSMenu()
+        for (title, val) in [
+            ("Off", "none"),
+            ("Wooden Bridge", "bridge"),
+            ("Stepping Stones (Tobi-ishi)", "stones")
+        ] {
+            let item = NSMenuItem(title: title, action: #selector(selectPondAccent(_:)), keyEquivalent: "")
+            item.representedObject = val
+            item.state = (config.pondAccent == val) ? .on : .off
+            item.target = self
+            accentSub.addItem(item)
+        }
+        let accentItem = NSMenuItem(title: "Zen Garden Accent", action: nil, keyEquivalent: "")
+        accentItem.submenu = accentSub
+        menu.addItem(accentItem)
+
         menu.addItem(.separator())
 
         // Toggles
@@ -296,6 +316,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         rainMenuItem = addToggle("Gentle Rain", isOn: config.rainOn, action: #selector(toggleRain(_:)))
         addToggle("Pure ASCII Mode (Monochrome)", isOn: config.monoMode, action: #selector(toggleMono(_:)))
         addToggle("Desktop Click Ripples", isOn: wallpaper.desktopClicksEnabled, action: #selector(toggleDesktopClicks(_:)))
+        addToggle("Launch at Login", isOn: SMAppService.mainApp.status == .enabled, action: #selector(toggleLaunchAtLogin(_:)))
 
         menu.addItem(.separator())
 
@@ -379,6 +400,28 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
             }
         }
         savePreferences()
+    }
+
+    @objc private func selectPondAccent(_ sender: NSMenuItem) {
+        guard let val = sender.representedObject as? String else { return }
+        config.pondAccent = val
+        sender.menu?.items.forEach { $0.state = ($0 == sender) ? .on : .off }
+        savePreferences()
+    }
+
+    @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
+        let svc = SMAppService.mainApp
+        do {
+            if svc.status == .enabled {
+                try svc.unregister()
+                sender.state = .off
+            } else {
+                try svc.register()
+                sender.state = .on
+            }
+        } catch {
+            sender.state = (svc.status == .enabled) ? .on : .off
+        }
     }
 
     @objc private func toggleLiveWeather(_ sender: NSMenuItem) {

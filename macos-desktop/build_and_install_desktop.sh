@@ -30,6 +30,7 @@ swiftc \
   -framework CoreAudio \
   -framework AudioToolbox \
   -framework IOKit \
+  -framework ServiceManagement \
   -o "$APP_DIR/Contents/MacOS/ASCIIKoiDesktop" \
   "$ROOT_DIR/Sources/PondEngine.swift" \
   "$DESKTOP_DIR/Sources/AgentMonitor.swift" \

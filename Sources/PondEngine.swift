@@ -30,6 +30,7 @@ struct SaverConfig {
     var minimalistMode: Bool = false
     var musicReactive: Bool = true
     var treeBranch: String = "bottomRight" // none | topRight | topLeft | bottomRight | bottomLeft
+    var pondAccent: String = "bridge"      // none | bridge | stones (placed in opposite corner from treeBranch)
     var cloudDensity: CGFloat = 0.90       // 0.30 (clear) .. 1.45 (overcast), driven by Live Weather
     var isPreview: Bool = false
 }
@@ -162,6 +163,8 @@ private struct Koi {
     var breachProgress: CGFloat
     var breachCooldown: CGFloat
     var breachSplashTick: CGFloat
+    var breachDir: CGFloat = 1.0
+    var breachLaunched: Bool = false
     var hasEntered: Bool
     var leaving: Bool
     var agentId: String? = nil
@@ -443,6 +446,17 @@ final class PondEngine {
     private var branchShadowCells: [(col: Int, row: Int, ch: Character, swayWeight: CGFloat)] = []
     private var branchTipPoints: [CGPoint] = []
     private var branchCacheKey: String = ""
+
+    // Pre-rasterized top-down Zen Garden Accent: Wooden Bridge or Stepping Stones (Tobi-ishi) -> ~0.06ms/frame!
+    private struct AccentCell {
+        let col: Int
+        let row: Int
+        let ch: Character
+        let kind: UInt8 // Bridge: 0=plank dark, 1=plank light, 2=rail, 3=post | Stones: 4=stone dark, 5=stone top, 6=moss
+    }
+    private var accentCells: [AccentCell] = []
+    private var accentShadowCells: [(col: Int, row: Int, ch: Character)] = []
+    private var accentCacheKey: String = ""
 
     // Visible falling raindrops (lightweight: max ~18 drops -> ~0.02ms/frame!)
     private struct RainDrop {
@@ -1293,31 +1307,78 @@ final class PondEngine {
             if fish.breachCooldown <= 0 && fish.z > 0.68 && !fish.leaving {
                 let h = fish.nodes[0]
                 if h.x > width * 0.14 && h.x < width * 0.86 && h.y > height * 0.14 && h.y < height * 0.86 {
-                    fish.breaching = true; fish.breachProgress = 0; fish.breachSplashTick = 0
+                    fish.breaching = true
+                    fish.breachProgress = 0
+                    fish.breachSplashTick = 0
+                    fish.breachLaunched = false
+                    fish.breachDir = Bool.random() ? 1.0 : -1.0
                     fish.breachCooldown = CGFloat.random(in: 10...22)
-                    let pt = fish.renderNodes[min(2, fish.N - 1)]
-                    spawnSplashBurst(x: pt.x, y: pt.y, count: 16, power: 1.1)
+                    // Subtle preparation tremor ripple as the Koi coils to jump
+                    ripples.append(Ripple(x: h.x, y: h.y, r: 4, maxR: 34 * fish.scale, alpha: 0.62))
                 } else {
                     fish.breachCooldown = 3.0
                 }
             }
         }
 
+        var breachAirArc: CGFloat = 0
+        var breachPitchTilt: CGFloat = 0
+        var breachPrep: Bool = false
+
         if fish.breaching {
-            fish.breachProgress += dt / 1.38
+            fish.breachProgress += dt / 1.72
             let p = min(1.0, fish.breachProgress)
-            fish.z = 0.88 + sin(p * .pi) * 0.42
-            fish.breachSplashTick -= dt
-            if fish.breachSplashTick <= 0 && p > 0.12 && p < 0.88 {
-                let pt = fish.renderNodes[min(fish.N - 1, Int(p * 12))]
-                spawnSplashBurst(x: pt.x, y: pt.y, count: 5, power: 0.75)
-                fish.breachSplashTick = 0.14
-            }
-            if fish.breachProgress >= 1.0 {
-                fish.breaching = false; fish.breachProgress = 0
-                fish.targetZ = CGFloat.random(in: 0.55...0.85)
-                let mid = fish.renderNodes[fish.N / 3]
-                spawnSplashBurst(x: mid.x, y: mid.y, count: 18, power: 1.15)
+
+            if p < 0.24 {
+                // Stage 1: Preparation coil & dip just beneath the surface
+                breachPrep = true
+                let prepT = p / 0.24
+                fish.z = 0.88 - sin(prepT * .pi) * 0.16
+            } else if p < 0.86 {
+                // Stage 2: Explosive launch, pitched-up climb, C-curve mid-air arch, and head-first dive!
+                let airP = (p - 0.24) / 0.62
+                breachAirArc = sin(airP * .pi)
+                breachPitchTilt = abs(cos(airP * .pi)) // steepest tilt at launch & dive entry
+                fish.z = 1.0 + breachAirArc * 0.68
+
+                if !fish.breachLaunched {
+                    fish.breachLaunched = true
+                    let pt = fish.renderNodes[min(2, fish.N - 1)]
+                    spawnSplashBurst(x: pt.x, y: pt.y, count: 18, power: 1.25)
+                }
+
+                // Trailing airborne sparkling water droplets shaking off fins & tail!
+                fish.breachSplashTick -= dt
+                if fish.breachSplashTick <= 0 {
+                    let s = screenScale()
+                    let nodeIdx = min(fish.N - 1, max(1, Int((1.0 - airP * 0.5) * CGFloat(fish.N - 2))))
+                    let pt = fish.renderNodes[nodeIdx]
+                    for _ in 0..<5 {
+                        let ang = CGFloat.random(in: 0...(2 * .pi))
+                        let spd = CGFloat.random(in: 22...76) * s
+                        splashes.append(Splash(
+                            x: pt.x + CGFloat.random(in: -8...8) * s,
+                            y: pt.y + CGFloat.random(in: -8...8) * s,
+                            z: max(1.04, fish.z - 0.06),
+                            vx: cos(ang) * spd, vy: sin(ang) * spd,
+                            vz: CGFloat.random(in: 0.6...2.1),
+                            big: Bool.random()
+                        ))
+                    }
+                    fish.breachSplashTick = 0.075
+                }
+            } else {
+                // Stage 3: Head-first splashdown with massive water burst & triple concentric ripples!
+                fish.breaching = false
+                fish.breachProgress = 0
+                fish.breachLaunched = false
+                fish.z = 0.86
+                fish.targetZ = CGFloat.random(in: 0.48...0.82)
+                let headPt = fish.renderNodes[min(2, fish.N - 1)]
+                let midPt = fish.renderNodes[fish.N / 2]
+                spawnSplashBurst(x: headPt.x, y: headPt.y, count: 28, power: 1.48)
+                spawnSplashBurst(x: midPt.x, y: midPt.y, count: 10, power: 0.95)
+                ripples.append(Ripple(x: headPt.x, y: headPt.y, r: 8 * fish.scale, maxR: 135 * fish.scale, alpha: 0.96))
             }
         } else {
             fish.zTimer -= dt
@@ -1325,7 +1386,7 @@ final class PondEngine {
             fish.z += (fish.targetZ - fish.z) * min(1.0, dt * 0.55)
         }
 
-        let breachBoost: CGFloat = fish.z > 1.0 ? (fish.z - 1.0) * 0.34 : 0
+        let breachBoost: CGFloat = fish.z > 1.0 ? (fish.z - 1.0) * 0.44 : 0
         fish.scale = fish.baseScale * (0.86 + min(1.0, fish.z) * 0.18 + breachBoost)
         fish.segLen = 9.4 * fish.scale
         fish.barbelSegLen = 5.2 * fish.scale
@@ -1466,20 +1527,23 @@ final class PondEngine {
             default: return 1.0
             }
         }()
-        let surge: CGFloat = fish.breaching ? 1.38 : stateSpeedMult
+        let surge: CGFloat = breachPrep ? 0.62 : (fish.breaching ? 1.58 : stateSpeedMult)
         let targetSpeed = fish.baseSpeed * surge * (1.0 + turnEffort * 0.22)
-        fish.speed += (targetSpeed - fish.speed) * min(1.0, dt * 3.2)
-        fish.phase += dt * (4.5 + turnEffort * 2.0 + (fish.breaching ? 2.5 : 0))
+        fish.speed += (targetSpeed - fish.speed) * min(1.0, dt * (fish.breaching ? 6.0 : 3.2))
+        let phaseRate: CGFloat = breachPrep ? 10.5 : (fish.breaching ? 7.8 : (4.5 + turnEffort * 2.0))
+        fish.phase += dt * phaseRate
 
         fish.nodes[0].x += cos(fish.angle) * fish.speed * dt
         fish.nodes[0].y += sin(fish.angle) * fish.speed * dt
 
+        // Pitch foreshortening: when launching up or diving head-first into the water, spine compresses along travel axis!
+        let effSegLen = fish.segLen * (1.0 - breachPitchTilt * 0.24)
         for i in 1..<fish.N {
             let prev = fish.nodes[i - 1], curr = fish.nodes[i]
             let dx = curr.x - prev.x, dy = curr.y - prev.y
             let d = max(0.0001, hypot(dx, dy))
-            fish.nodes[i].x = prev.x + (dx / d) * fish.segLen
-            fish.nodes[i].y = prev.y + (dy / d) * fish.segLen
+            fish.nodes[i].x = prev.x + (dx / d) * effSegLen
+            fish.nodes[i].y = prev.y + (dy / d) * effSegLen
         }
 
         for i in 0..<fish.N {
@@ -1490,8 +1554,12 @@ final class PondEngine {
             let len = max(0.0001, hypot(tx, ty))
             tx /= len; ty /= len
             let nx = -ty, ny = tx
-            let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
+            let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale * (breachPrep ? 1.35 : 1.0)
             var sway = sin(fish.phase - t * 6.5) * amp
+            if breachAirArc > 0.01 {
+                // Athletic mid-air C-curve body arch & twist as the Koi leaps through the air!
+                sway = sway * 0.35 + fish.breachDir * sin(t * .pi) * breachAirArc * 28.0 * fish.scale
+            }
             if config.musicReactive && abs(beatNod) > 0.01 && t < 0.28 {
                 // Clean head-only turn (snout to gills) locked 1-to-1 with real beats
                 let headFactor = pow(1.0 - (t / 0.28), 1.35)
@@ -2563,6 +2631,113 @@ final class PondEngine {
         branchCells = Array(cellMap.values)
     }
 
+    /// Pre-rasterizes top-down Zen Garden Accent (Wooden Bridge or Stepping Stones) ONCE on corner/mode/resize change (~0.06ms/frame!)
+    private func ensurePondAccentCache() {
+        // Place in opposite bottom corner from treeBranch so it never collides with widgets or the tree!
+        let onLeft = (config.treeBranch != "bottomLeft")
+        let key = "\(config.pondAccent)_\(onLeft ? "L" : "R")_\(cols)x\(rows)"
+        if accentCacheKey == key { return }
+        accentCacheKey = key
+        accentCells.removeAll(keepingCapacity: true)
+        accentShadowCells.removeAll(keepingCapacity: true)
+
+        guard config.pondAccent != "none", cols > 30, rows > 16 else { return }
+        let s = screenScale()
+        var cellMap: [Int: AccentCell] = [:]
+        var shadowSet = Set<Int>()
+
+        func put(px: CGFloat, py: CGFloat, ch: Character, kind: UInt8, shDx: Int, shDy: Int) {
+            let c = Int(px / cellW), r = Int(py / cellH)
+            guard c >= 0 && c < cols && r >= 0 && r < rows else { return }
+            let idx = r * cols + c
+            if let ex = cellMap[idx], ex.kind > kind { return }
+            cellMap[idx] = AccentCell(col: c, row: r, ch: ch, kind: kind)
+            let sc = c + shDx, sr = r + shDy
+            if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
+                if shadowSet.insert(sr * cols + sc).inserted {
+                    accentShadowCells.append((col: sc, row: sr, ch: kind >= 2 ? ":" : "·"))
+                }
+            }
+        }
+
+        if config.pondAccent == "bridge" {
+            // Classic Japanese curved wooden footbridge seen 100% TOP-DOWN arching across the bottom corner!
+            let p0 = onLeft ? CGPoint(x: -14, y: height * 0.72) : CGPoint(x: width + 14, y: height * 0.72)
+            let p1 = onLeft ? CGPoint(x: width * 0.14, y: height * 0.84) : CGPoint(x: width * 0.86, y: height * 0.84)
+            let p2 = onLeft ? CGPoint(x: width * 0.24, y: height + 14) : CGPoint(x: width * 0.76, y: height + 14)
+            let halfW: CGFloat = 34 * s
+            let plankCount = 26
+
+            for i in 0...plankCount {
+                let t = CGFloat(i) / CGFloat(plankCount)
+                let mt = 1 - t
+                let cx = mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x
+                let cy = mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
+                let tx = 2 * mt * (p1.x - p0.x) + 2 * t * (p2.x - p1.x)
+                let ty = 2 * mt * (p1.y - p0.y) + 2 * t * (p2.y - p1.y)
+                let len = max(0.001, hypot(tx, ty))
+                let nx = -ty / len, ny = tx / len
+
+                // Leave crisp 1-cell micro-gaps between wooden planks so the plank rhythm reads unmistakably top-down
+                let isPost = (i % 6 == 0)
+                let plankSteps = 14
+                for k in -plankSteps...plankSteps {
+                    let frac = CGFloat(k) / CGFloat(plankSteps)
+                    let px = cx + nx * frac * halfW
+                    let py = cy + ny * frac * halfW
+                    if abs(frac) > 0.86 {
+                        // Lacquered cedar/vermilion side handrails & corner posts
+                        put(px: px, py: py, ch: isPost ? "O" : "=", kind: isPost ? 3 : 2, shDx: 5, shDy: 3)
+                    } else if i % 2 == 0 || abs(frac) < 0.80 {
+                        // Individual wooden deck planks with alternating grain tone
+                        let isLight = (i % 2 == 0)
+                        let ch: Character = isLight ? ((k + i) % 5 == 0 ? "#" : "=") : ((k + i) % 4 == 0 ? "-" : "=")
+                        put(px: px, py: py, ch: ch, kind: isLight ? 1 : 0, shDx: 5, shDy: 3)
+                    }
+                }
+            }
+        } else if config.pondAccent == "stones" {
+            // 4 natural Japanese mossy stepping stones (Tobi-ishi) curving across the opposite corner!
+            let specs: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
+                (0.045, 0.78, 34, 24,  0.22),
+                (0.115, 0.84, 30, 22, -0.18),
+                (0.175, 0.90, 36, 25,  0.30),
+                (0.235, 0.96, 28, 21, -0.12)
+            ]
+            for (idx, sp) in specs.enumerated() {
+                let cx = onLeft ? width * sp.0 : width * (1.0 - sp.0)
+                let cy = height * sp.1
+                let rx = sp.2 * s, ry = sp.3 * s
+                let cCos = cos(-sp.4), cSin = sin(-sp.4)
+                let minC = max(0, Int(floor((cx - rx - 6) / cellW))), maxC = min(cols - 1, Int(ceil((cx + rx + 6) / cellW)))
+                let minR = max(0, Int(floor((cy - ry - 6) / cellH))), maxR = min(rows - 1, Int(ceil((cy + ry + 6) / cellH)))
+                guard minR <= maxR && minC <= maxC else { continue }
+                for r in minR...maxR {
+                    let dy = (CGFloat(r) + 0.5) * cellH - cy
+                    for c in minC...maxC {
+                        let dx = (CGFloat(c) + 0.5) * cellW - cx
+                        let lx = (dx * cCos - dy * cSin) / rx
+                        let ly = (dx * cSin + dy * cCos) / ry
+                        // Slightly irregular organic stone edge
+                        let ang = atan2(ly, lx)
+                        let edge = 1.0 + 0.11 * sin(ang * 3.0 + CGFloat(idx) * 2.1) + 0.06 * cos(ang * 5.0)
+                        let d = hypot(lx, ly) / edge
+                        if d <= 1.0 {
+                            let h = hash2(CGFloat(c + idx * 17), CGFloat(r))
+                            let isRim = d > 0.78
+                            let isMoss = isRim && h > 0.58
+                            let kind: UInt8 = isMoss ? 6 : (isRim ? 4 : 5)
+                            let ch: Character = isMoss ? "+" : (isRim ? "%" : (h > 0.62 ? "#" : (h > 0.25 ? "=" : ".")))
+                            put(px: (CGFloat(c) + 0.5) * cellW, py: (CGFloat(r) + 0.5) * cellH, ch: ch, kind: kind, shDx: 3, shDy: 2)
+                        }
+                    }
+                }
+            }
+        }
+
+        accentCells = Array(cellMap.values)
+    }
+
     private func flushGlyphBatches(in ctx: CGContext) {
         for key in batchKeys {
             guard let glyphs = batchGlyphs[key], let positions = batchPositions[key], !glyphs.isEmpty else { continue }
@@ -2699,8 +2874,8 @@ final class PondEngine {
                 if rn.x < minX { minX = rn.x }; if rn.x > maxX { maxX = rn.x }
                 if rn.y < minY { minY = rn.y }; if rn.y > maxY { maxY = rn.y }
             }
-            let pad = 84 * fish.scale
-            let shX = 6 + min(1.25, fish.z) * 28, shY = 5 + min(1.25, fish.z) * 24
+            let pad = 88 * fish.scale
+            let shX = 6 + min(1.70, fish.z) * 34, shY = 5 + min(1.70, fish.z) * 28
             actors.append(ActorBox(
                 kind: 0, index: i, z: fish.z, shX: shX, shY: shY,
                 minC: max(0, Int(floor((minX - pad) / cellW))), maxC: min(cols - 1, Int(ceil((maxX + pad + shX) / cellW))),
@@ -3192,6 +3367,33 @@ final class PondEngine {
                     if fc >= 0 && fc < cols && fr >= 0 && fr < rows {
                         drawGlyph(ctx, glow > 0.72 ? "*" : "·", col: fc, row: fr, r: pal.firefly.r, g: pal.firefly.g, b: pal.firefly.b, a: glow * mult)
                     }
+                }
+            }
+        }
+
+        // Pre-rasterized top-down Zen Garden Accent (Wooden Bridge or Stepping Stones — Koi swim underneath the bridge!)
+        if !config.minimalistMode && config.pondAccent != "none" {
+            ensurePondAccentCache()
+            let woodDark = config.monoMode ? pal.stone : RGB(94, 62, 42)
+            let woodLight = config.monoMode ? pal.ripple : RGB(132, 92, 62)
+            let railRgb = config.monoMode ? pal.white : RGB(166, 62, 48) // Classic Japanese vermilion-cedar rail
+            let postRgb = config.monoMode ? pal.white : RGB(196, 86, 62)
+            let stoneDark = config.monoMode ? pal.stone : RGB(96, 108, 106)
+            let stoneTop = config.monoMode ? pal.ripple : RGB(144, 156, 152)
+            let mossRgb = config.monoMode ? pal.lotus : RGB(88, 148, 92)
+
+            for sh in accentShadowCells {
+                drawGlyph(ctx, sh.ch, col: sh.col, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.85)
+            }
+            for ac in accentCells {
+                switch ac.kind {
+                case 0: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodDark.r, g: woodDark.g, b: woodDark.b, a: 0.96)
+                case 1: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodLight.r, g: woodLight.g, b: woodLight.b, a: 0.97)
+                case 2: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: railRgb.r, g: railRgb.g, b: railRgb.b, a: 0.98)
+                case 3: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: postRgb.r, g: postRgb.g, b: postRgb.b, a: 0.99)
+                case 4: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneDark.r, g: stoneDark.g, b: stoneDark.b, a: 0.96)
+                case 5: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneTop.r, g: stoneTop.g, b: stoneTop.b, a: 0.97)
+                default: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: mossRgb.r, g: mossRgb.g, b: mossRgb.b, a: 0.95)
                 }
             }
         }
