@@ -10,9 +10,16 @@ internal static class Program
     private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => Log.Error(e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Error(e.ExceptionObject as Exception);
 
         string mode = "tray";
         IntPtr previewHwnd = IntPtr.Zero;
+
+        // A .scr launched with no arguments (e.g. double-clicked) must show its settings, per the screen saver contract.
+        bool isScr = string.Equals(Path.GetExtension(Environment.ProcessPath), ".scr", StringComparison.OrdinalIgnoreCase);
+        if (args.Length == 0 && isScr) mode = "config";
 
         if (args.Length > 0)
         {
@@ -20,6 +27,10 @@ internal static class Program
             if (first.StartsWith("/s") || first.StartsWith("-s"))
             {
                 mode = "screensaver";
+            }
+            else if (first.StartsWith("/w") || first.StartsWith("-w"))
+            {
+                mode = "window";
             }
             else if (first.StartsWith("/c") || first.StartsWith("-c"))
             {
@@ -50,8 +61,21 @@ internal static class Program
                 RunScreenSaver();
                 break;
 
+            case "window":
+                Application.Run(new PondCanvasForm(PondMode.InteractiveWindow));
+                break;
+
             default:
-                Application.Run(new TrayAppContext());
+                using (var single = new Mutex(true, @"Local\ASCIIKoiPond.Tray", out bool isFirst))
+                {
+                    if (!isFirst)
+                    {
+                        MessageBox.Show("ASCII Koi Pond is already running — look for the koi icon in the system tray.",
+                            "ASCII Koi Pond", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+                    Application.Run(new TrayAppContext());
+                }
                 break;
         }
     }
@@ -101,6 +125,7 @@ internal sealed class PondCanvasForm : Form
     private readonly GdiSurface _surface = new();
     private readonly System.Windows.Forms.Timer _timer = new();
     private readonly Stopwatch _watch = Stopwatch.StartNew();
+    private DxPresenter? _dx;
     private double _lastSec;
     private Point _initialMouse;
     private bool _mouseReady;
@@ -167,6 +192,7 @@ internal sealed class PondCanvasForm : Form
         if (_mode != PondMode.LiveWallpaper) return;
         var vs = SystemInformation.VirtualScreen;
         Win32.AttachToDesktop(Handle, vs.Width, vs.Height);
+        _dx ??= new DxPresenter(Handle);
     }
 
     public void ReloadConfig(PondConfig cfg)
@@ -185,29 +211,42 @@ internal sealed class PondCanvasForm : Form
         if (!IsPaused)
             _engine.Step(dt);
 
-        IntPtr dc = Win32.GetDC(Handle);
-        if (dc != IntPtr.Zero)
+        if (_dx != null)
+        {
+            // Live wallpaper: present through DirectX so DWM composites it inside the desktop (required on Win11 25H2+).
+            int w = ClientSize.Width, h = ClientSize.Height;
+            _dx.Present(w, h, dc => _engine.Render(_surface, dc, w, h));
+            return;
+        }
+
+        IntPtr wdc = Win32.GetDC(Handle);
+        if (wdc != IntPtr.Zero)
         {
             try
             {
-                _engine.Render(_surface, dc, ClientSize.Width, ClientSize.Height);
+                _engine.Render(_surface, wdc, ClientSize.Width, ClientSize.Height);
             }
             finally
             {
-                Win32.ReleaseDC(Handle, dc);
+                Win32.ReleaseDC(Handle, wdc);
             }
         }
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        // Painted directly via GDI BitBlt in TickFrame
+        // Normal frames are drawn in TickFrame; this covers WM_PAINT / WM_PRINT (uncovering, resizing, capture).
+        if (_dx != null || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+        IntPtr dc = e.Graphics.GetHdc();
+        try { _engine.Render(_surface, dc, ClientSize.Width, ClientSize.Height); }
+        finally { e.Graphics.ReleaseHdc(dc); }
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         _timer.Stop();
         _timer.Dispose();
+        _dx?.Dispose();
         _surface.Dispose();
         if (_mode == PondMode.ScreenSaver) Cursor.Show();
         base.OnFormClosed(e);
@@ -249,8 +288,12 @@ internal sealed class TrayAppContext : ApplicationContext
             Visible = true
         };
         _tray.DoubleClick += (_, _) => OpenPreviewWindow();
+        Application.ApplicationExit += (_, _) => { if (_tray.Visible) { _tray.Visible = false; } };
 
         StartWallpaper();
+        _tray.ShowBalloonTip(4000, "ASCII Koi Pond",
+            "Running in the system tray. Double-click the koi icon to open the pond window; right-click for options.",
+            ToolTipIcon.Info);
     }
 
     private void StartWallpaper()

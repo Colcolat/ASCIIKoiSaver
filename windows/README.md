@@ -25,3 +25,20 @@ Requires [.NET 10 SDK](https://dotnet.microsoft.com/download) (builds on Windows
 cd windows/ASCIIKoiPond
 dotnet publish -c Release -r win-x64 --self-contained true -o ../dist
 ```
+
+### Command-line switches
+| Switch | Mode |
+|---|---|
+| *(none)* | System tray + Live Wallpaper (single instance) |
+| `/w` | Interactive pond window only |
+| `/s` | Full-screen screen saver (all monitors) |
+| `/c` | Options dialog |
+| `/p <hwnd>` | Screen-saver preview (used by Windows) |
+
+Errors are logged to `%APPDATA%\ASCIIKoiPond\error.log`.
+
+### How the Live Wallpaper renders (Windows 11 24H2 / 25H2)
+On Windows 11 25H2 (build 26200+) Explorer no longer composites GDI-drawn windows from other processes inside the
+desktop (`Progman` has `WS_EX_NOREDIRECTIONBITMAP`), so a classic `BitBlt` wallpaper attaches correctly but is invisible.
+The wallpaper therefore presents each frame through a DXGI flip-model swap chain (`DxPresenter.cs`, via Vortice.Direct3D11) —
+the engine still draws with GDI into the swap chain's back buffer. The interactive window and screen saver keep plain GDI.

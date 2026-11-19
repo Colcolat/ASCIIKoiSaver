@@ -174,9 +174,20 @@ internal static class Win32
         return true;
     }
 
+    public const uint SPI_GETDESKWALLPAPER = 0x0073;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SystemParametersInfoW")]
+    private static extern bool SystemParametersInfoGet(uint uiAction, uint uiParam, System.Text.StringBuilder pvParam, uint fWinIni);
+
+    /// <summary>
+    /// Repaints the desktop after the live wallpaper is removed, re-applying the user's CURRENT wallpaper.
+    /// (Passing null to SPI_SETDESKWALLPAPER resets the wallpaper to the Windows default — never do that.)
+    /// </summary>
     public static void RefreshDesktopWallpaper()
     {
-        SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, null, SPIF_SENDCHANGE);
+        var sb = new System.Text.StringBuilder(1024);
+        if (SystemParametersInfoGet(SPI_GETDESKWALLPAPER, (uint)sb.Capacity, sb, 0))
+            SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, sb.ToString(), SPIF_SENDCHANGE);
     }
 }
 
