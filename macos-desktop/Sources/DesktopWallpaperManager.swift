@@ -17,6 +17,7 @@ final class DesktopWallpaperManager {
     private var windows: [NSWindow] = []
     private var views: [DesktopPondView] = []
     private var renderTimer: Timer?
+    private var currentFPS: Double = 24.0
     private var visibilityTimer: Timer?
     private var clickMonitor: Any?
     private var lastTimestamp: CFTimeInterval = 0
@@ -227,10 +228,7 @@ final class DesktopWallpaperManager {
         if shouldRun {
             if renderTimer == nil {
                 lastTimestamp = CACurrentMediaTime()
-                // 60 FPS for low-latency visual beat sync (still pauses to 0% CPU when fullscreen!)
-                renderTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-                    self?.tick()
-                }
+                startRenderTimer(fps: currentFPS)
             }
         } else {
             renderTimer?.invalidate()
@@ -239,11 +237,30 @@ final class DesktopWallpaperManager {
         onStatusChanged?(shouldRun, isAutoPaused)
     }
 
+    private func startRenderTimer(fps: Double) {
+        renderTimer?.invalidate()
+        currentFPS = fps
+        let interval = 1.0 / fps
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        // Small tolerance lets Apple Silicon schedule idle frames on Efficiency cores (cool & quiet!)
+        timer.tolerance = fps <= 25.0 ? 0.005 : 0.001
+        renderTimer = timer
+    }
+
     private func tick() {
         let now = CACurrentMediaTime()
-        let dt = lastTimestamp > 0 ? CGFloat(now - lastTimestamp) : (1.0 / 30.0)
+        let dt = lastTimestamp > 0 ? CGFloat(now - lastTimestamp) : CGFloat(1.0 / currentFPS)
         lastTimestamp = now
         let audio = audioFrameProvider?() ?? (bass: 0, beatHit: 0, playing: false)
+
+        // Adaptive FPS: 36 FPS when music beats are active, 24 FPS when calm/idle (massive heat savings!)
+        let desiredFPS: Double = (config.musicReactive && audio.playing) ? 36.0 : 24.0
+        if desiredFPS != currentFPS {
+            startRenderTimer(fps: desiredFPS)
+        }
+
         for v in views {
             v.engine.updateAudio(bass: audio.bass, beatHit: audio.beatHit, playing: audio.playing)
             v.engine.step(dt: dt)

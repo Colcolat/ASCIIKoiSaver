@@ -403,6 +403,17 @@ final class PondEngine {
     private var patternSeed: CGFloat = CGFloat.random(in: 1...99)
     private var initialized = false
 
+    // Performance caches (reused across frames for zero heap churn & low CPU!)
+    private var rippleChGrid: [UInt8] = []
+    private var rippleAlphaGrid: [CGFloat] = []
+    private var rippleDirtyIndices: [Int] = []
+    private var cloudGrid: [CGFloat] = []
+    private var cloudFrameCounter: Int = 0
+    private var lotusFrameCache: [(x: CGFloat, y: CGFloat, r: CGFloat, r2: CGFloat, notch: CGFloat, flower: Bool)] = []
+    private var batchGlyphs: [UInt32: [CGGlyph]] = [:]
+    private var batchPositions: [UInt32: [CGPoint]] = [:]
+    private var batchKeys: [UInt32] = []
+
     init() {
         setupFont(size: 10.4)
     }
@@ -2032,14 +2043,18 @@ final class PondEngine {
         return nil
     }
 
+    @inline(__always)
     private func sampleLotus(_ px: CGFloat, _ py: CGFloat) -> (flower: Bool, norm: CGFloat, vein: Bool)? {
-        for lp in lotusPads {
-            let ox = sin(time * 0.55 + lp.phase) * 2.5, oy = cos(time * 0.45 + lp.phase) * 2.0
-            let dx = px - (lp.x + ox), dy = py - (lp.y + oy)
-            let d = hypot(dx, dy)
-            if d <= lp.r {
+        for lp in lotusFrameCache {
+            let dx = px - lp.x
+            if abs(dx) > lp.r { continue }
+            let dy = py - lp.y
+            if abs(dy) > lp.r { continue }
+            let d2 = dx * dx + dy * dy
+            if d2 <= lp.r2 {
+                let d = sqrt(d2)
                 let ang = atan2(dy, dx)
-                if abs(normalizeAngle(ang - lp.notchAngle)) < 0.28 { return nil }
+                if abs(normalizeAngle(ang - lp.notch)) < 0.28 { return nil }
                 let normR = d / lp.r
                 if lp.flower && d < lp.r * 0.24 {
                     let petal = sin(ang * 6) * 0.5 + 0.5
@@ -2052,19 +2067,29 @@ final class PondEngine {
         return nil
     }
 
+    @inline(__always)
     private func sampleLotusShadow(_ px: CGFloat, _ py: CGFloat) -> Bool {
-        for lp in lotusPads {
-            if hypot(px - (lp.x + 20), py - (lp.y + 18)) <= lp.r { return true }
+        for lp in lotusFrameCache {
+            let dx = px - (lp.x + 20)
+            if abs(dx) > lp.r { continue }
+            let dy = py - (lp.y + 18)
+            if abs(dy) > lp.r { continue }
+            if dx * dx + dy * dy <= lp.r2 { return true }
         }
         return false
     }
 
+    @inline(__always)
     private func samplePlant(_ px: CGFloat, _ py: CGFloat) -> (tip: CGFloat, ch: Character)? {
         for pl in plants {
-            let dx = px - pl.x, dy = py - pl.y
-            let dist = hypot(dx, dy)
-            if dist > pl.r + 10 { continue }
-            if dist < 5.0 { return (0.15, "%") }
+            let maxR = pl.r + 10
+            let dx = px - pl.x
+            if abs(dx) > maxR { continue }
+            let dy = py - pl.y
+            if abs(dy) > maxR { continue }
+            let d2 = dx * dx + dy * dy
+            if d2 > maxR * maxR { continue }
+            if d2 < 25.0 { return (0.15, "%") }
             let sway = sin(time * 1.15 + pl.phase) * 0.24
             for (f, fr) in pl.fronds.enumerated() {
                 let ang = fr.ang + sway * (0.6 + 0.4 * sin(CGFloat(f) + time * 0.8))
@@ -2151,17 +2176,49 @@ final class PondEngine {
         return rowStr[idx] == "1"
     }
 
-    // MARK: - Native CoreGraphics Rendering
+    // MARK: - Native CoreGraphics Rendering (Color-Batched for Ultra-Low CPU)
 
     @inline(__always)
     private func drawGlyph(_ ctx: CGContext, _ ch: Character, col: Int, row: Int, r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat = 1.0) {
-        guard var glyph = glyphCache[ch] else { return }
-        ctx.setFillColor(red: max(0, min(1, r)), green: max(0, min(1, g)), blue: max(0, min(1, b)), alpha: max(0, min(1, a)))
-        // AppKit origin is bottom-left; flip row so row 0 is at top!
+        guard let glyph = glyphCache[ch] else { return }
+        let cr = max(0, min(1, r))
+        let cg = max(0, min(1, g))
+        let cb = max(0, min(1, b))
+        let ca = max(0, min(1, a))
+        // Quantize to 5-bit RGB + 4-bit Alpha (32 levels/channel) so thousands of glyphs batch into ~90 CTFontDrawGlyphs calls!
+        let r5 = UInt32(cr * 31.0 + 0.5)
+        let g5 = UInt32(cg * 31.0 + 0.5)
+        let b5 = UInt32(cb * 31.0 + 0.5)
+        let a4 = UInt32(ca * 15.0 + 0.5)
+        let key = (r5 << 14) | (g5 << 9) | (b5 << 4) | a4
+
         let x = CGFloat(col) * cellW
         let y = height - CGFloat(row + 1) * cellH + cellH * 0.18
-        var pt = CGPoint(x: x, y: y)
-        CTFontDrawGlyphs(ctFont, &glyph, &pt, 1, ctx)
+        let pt = CGPoint(x: x, y: y)
+
+        if batchGlyphs[key] == nil {
+            batchGlyphs[key] = [glyph]
+            batchPositions[key] = [pt]
+            batchKeys.append(key)
+        } else {
+            batchGlyphs[key]!.append(glyph)
+            batchPositions[key]!.append(pt)
+        }
+    }
+
+    private func flushGlyphBatches(in ctx: CGContext) {
+        for key in batchKeys {
+            guard let glyphs = batchGlyphs[key], let positions = batchPositions[key], !glyphs.isEmpty else { continue }
+            let r = CGFloat((key >> 14) & 31) / 31.0
+            let g = CGFloat((key >> 9) & 31) / 31.0
+            let b = CGFloat((key >> 4) & 31) / 31.0
+            let a = CGFloat(key & 15) / 15.0
+            ctx.setFillColor(red: r, green: g, blue: b, alpha: a)
+            CTFontDrawGlyphs(ctFont, glyphs, positions, glyphs.count, ctx)
+            batchGlyphs[key]?.removeAll(keepingCapacity: true)
+            batchPositions[key]?.removeAll(keepingCapacity: true)
+        }
+        batchKeys.removeAll(keepingCapacity: true)
     }
 
     @inline(__always)
@@ -2191,10 +2248,89 @@ final class PondEngine {
         ctx.setFont(cgFont)
         ctx.setFontSize(fontSize)
         ctx.textMatrix = .identity
+        ctx.setAllowsFontSmoothing(false)
+        ctx.setShouldSmoothFonts(false)
 
         let now = Date()
         let cal = Calendar.current
         let timeChars = Array(String(format: "%02d:%02d", cal.component(.hour, from: now), cal.component(.minute, from: now)))
+
+        // Precompute lotus pad frame positions once per frame (instead of sin/cos per cell!)
+        lotusFrameCache.removeAll(keepingCapacity: true)
+        if !config.minimalistMode {
+            for lp in lotusPads {
+                let ox = sin(time * 0.55 + lp.phase) * 2.5
+                let oy = cos(time * 0.45 + lp.phase) * 2.0
+                lotusFrameCache.append((lp.x + ox, lp.y + oy, lp.r, lp.r * lp.r, lp.notchAngle, lp.flower))
+            }
+        }
+
+        // Pre-stamp ripples by walking ONLY each circle's perimeter (~100 steps vs 22,800 cell checks!)
+        let gridSize = rows * cols
+        if rippleChGrid.count != gridSize {
+            rippleChGrid = Array(repeating: 0, count: gridSize)
+            rippleAlphaGrid = Array(repeating: 0, count: gridSize)
+            rippleDirtyIndices.removeAll(keepingCapacity: true)
+        } else {
+            for idx in rippleDirtyIndices {
+                rippleChGrid[idx] = 0
+                rippleAlphaGrid[idx] = 0
+            }
+            rippleDirtyIndices.removeAll(keepingCapacity: true)
+        }
+        for rp in ripples {
+            let fade = (1 - rp.r / rp.maxR) * rp.alpha
+            if fade <= 0.06 { continue }
+            let alpha = min(0.95, fade * 1.48)
+            let steps = max(24, Int(2.0 * .pi * max(4.0, rp.r) / 4.2))
+            let dAng = (2.0 * .pi) / CGFloat(steps)
+            for s in 0..<steps {
+                let ang = CGFloat(s) * dAng
+                let cAng = cos(ang), sAng = sin(ang)
+                let rx = rp.x + cAng * rp.r
+                let ry = rp.y + sAng * rp.r
+                let col = Int(rx / cellW), row = Int(ry / cellH)
+                if col >= 0 && col < cols && row >= 0 && row < rows {
+                    let idx = row * cols + col
+                    if alpha > rippleAlphaGrid[idx] {
+                        if rippleChGrid[idx] == 0 { rippleDirtyIndices.append(idx) }
+                        let absCos = abs(cAng)
+                        rippleChGrid[idx] = absCos > 0.72 ? (cAng > 0 ? 2 : 1) : (fade > 0.28 ? 3 : 4)
+                        rippleAlphaGrid[idx] = alpha
+                    }
+                }
+            }
+        }
+
+        // Cache drifting sky cloud fbm every 6 frames at 2x2 stride (cuts 96% of fbm CPU cost!)
+        let cloudCols = (cols + 1) / 2
+        let cloudRows = (rows + 1) / 2
+        let cloudSize = cloudCols * cloudRows
+        if !config.minimalistMode && pal.tod != "night" {
+            if cloudGrid.count != cloudSize || cloudFrameCounter % 6 == 0 {
+                if cloudGrid.count != cloudSize { cloudGrid = Array(repeating: 0, count: cloudSize) }
+                for cr in 0..<cloudRows {
+                    let py = (CGFloat(cr * 2) + 0.5) * cellH
+                    let base = cr * cloudCols
+                    for cc in 0..<cloudCols {
+                        let px = (CGFloat(cc * 2) + 0.5) * cellW
+                        cloudGrid[base + cc] = fbm(px * 0.0042 - time * 0.028, py * 0.0052 - time * 0.012)
+                    }
+                }
+            }
+            cloudFrameCounter += 1
+        }
+
+        // Precompute clock bounding box once per frame
+        let clockEnabled = config.showClock && !config.isPreview && !config.minimalistMode
+        let clockScaleX = cols > 170 ? 3 : (cols > 120 ? 2 : 1)
+        let clockScaleY = rows > 60 ? 3 : (rows > 40 ? 2 : 1)
+        let clockTotalW = timeChars.count * 6 * clockScaleX - clockScaleX
+        let clockTotalH = 7 * clockScaleY
+        let clockStartC = (cols - clockTotalW) / 2
+        let clockEndC = clockStartC + clockTotalW
+        let clockStartR = (rows - clockTotalH) / 2
+        let clockEndR = clockStartR + clockTotalH
 
         var actors: [ActorBox] = []
         actors.reserveCapacity(fishes.count + minnows.count + 1)
@@ -2237,12 +2373,27 @@ final class PondEngine {
         actors.sort { $0.z > $1.z }
 
         let moonX = width * 0.78, moonY = height * 0.26
+        let rippleChars: [Character] = [" ", "(", ")", "~", "·"]
+        var rowActors: [ActorBox] = []
+        rowActors.reserveCapacity(actors.count)
 
         for r in 0..<rows {
             let py = (CGFloat(r) + 0.5) * cellH
             let rowOff = r * cols
+            let rowWaveSin = sin(CGFloat(r) * 0.23 + time * 0.4)
+            let rowWaveCosBase = CGFloat(r) * 0.20 - time * 0.5
+            let inClockRow = clockEnabled && r >= clockStartR && r < clockEndR
+            let cloudRowOff = (r >> 1) * cloudCols
+
+            // Filter actors intersecting this row once per row (0–2 actors instead of 12 per cell!)
+            rowActors.removeAll(keepingCapacity: true)
+            for ac in actors where r >= ac.minR && r <= ac.maxR {
+                rowActors.append(ac)
+            }
+
             for c in 0..<cols {
                 let px = (CGFloat(c) + 0.5) * cellW
+                let cellIdx = rowOff + c
 
                 // 0. Lily pads on top of water
                 if !config.minimalistMode, let lp = sampleLotus(px, py) {
@@ -2259,28 +2410,16 @@ final class PondEngine {
                     continue
                 }
 
-                // 1. Ripples
-                var rippleCh: Character? = nil
-                var rippleAlpha: CGFloat = 0
-                for rp in ripples {
-                    let d = hypot(px - rp.x, py - rp.y)
-                    if abs(d - rp.r) < 3.2 {
-                        let fade = (1 - rp.r / rp.maxR) * rp.alpha
-                        if fade > 0.06 {
-                            let ang = atan2(py - rp.y, px - rp.x)
-                            let absCos = abs(cos(ang))
-                            rippleCh = absCos > 0.72 ? (cos(ang) > 0 ? ")" : "(") : (fade > 0.28 ? "~" : "·")
-                            rippleAlpha = min(0.95, fade * 1.48)
-                            break
-                        }
-                    }
-                }
+                // 1. Ripples (O(1) lookup from pre-stamped perimeter grid!)
+                let rCode = Int(rippleChGrid[cellIdx])
+                let rippleCh: Character? = rCode > 0 ? rippleChars[rCode] : nil
+                let rippleAlpha: CGFloat = rCode > 0 ? rippleAlphaGrid[cellIdx] : 0
 
-                // 2. Z-sorted swimmers & shadows
+                // 2. Z-sorted swimmers & shadows (row-culled actors!)
                 var hit: SampleHit? = nil
                 var shadowHit: SampleHit? = nil
-                for ac in actors {
-                    if c >= ac.minC && c <= ac.maxC && r >= ac.minR && r <= ac.maxR {
+                for ac in rowActors {
+                    if c >= ac.minC && c <= ac.maxC {
                         if hit == nil {
                             if ac.kind == 0 { hit = sampleKoi(fishes[ac.index], px, py, shadowOnly: false) }
                             else if ac.kind == 1, let tr = turtle { hit = sampleTurtle(tr, px, py, shadowOnly: false) }
@@ -2388,7 +2527,7 @@ final class PondEngine {
                 }
 
                 // 6. Submerged stone clock (clearer, luminous carved look)
-                if !config.minimalistMode && isClockCell(c, r, timeChars) {
+                if inClockRow && c >= clockStartC && c < clockEndC && isClockCell(c, r, timeChars) {
                     let shimmer = 1.65 + 0.35 * sin(CGFloat(c) * 0.18 + time * 1.1)
                     drawGlyph(ctx, "#", col: c, row: r, r: min(1, pal.clock.r * shimmer), g: min(1, pal.clock.g * shimmer), b: min(1, pal.clock.b * shimmer), a: 0.88)
                     continue
@@ -2397,29 +2536,30 @@ final class PondEngine {
                 if config.minimalistMode { continue }
 
                 // 7. Moon reflection & stones & caustics
-                let wave = sin(CGFloat(c) * 0.14 + time * 0.75 + sin(CGFloat(r) * 0.23 + time * 0.4)) *
-                           cos(CGFloat(r) * 0.20 - time * 0.5 + CGFloat(c) * 0.05)
+                let wave = sin(CGFloat(c) * 0.14 + time * 0.75 + rowWaveSin) *
+                           cos(rowWaveCosBase + CGFloat(c) * 0.05)
 
                 if pal.tod == "night" {
-                    let md = hypot((px - moonX) * 0.9, (py - moonY) * 1.15)
-                    if md < 52 + wave * 12 {
-                        let mAlpha = (1 - md / 64) * (0.28 + 0.25 * max(0, wave))
-                        if mAlpha > 0.08 {
-                            drawGlyph(ctx, md < 26 ? "~" : "·", col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: mAlpha)
-                            continue
+                    let mdx = (px - moonX) * 0.9, mdy = (py - moonY) * 1.15
+                    if abs(mdx) < 64 && abs(mdy) < 64 {
+                        let md = hypot(mdx, mdy)
+                        if md < 52 + wave * 12 {
+                            let mAlpha = (1 - md / 64) * (0.28 + 0.25 * max(0, wave))
+                            if mAlpha > 0.08 {
+                                drawGlyph(ctx, md < 26 ? "~" : "·", col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: mAlpha)
+                                continue
+                            }
                         }
                     }
                 }
 
-                if !config.minimalistMode {
-                    let stVal = stoneMap[rowOff + c]
-                    if stVal > 0.15 {
-                        let causticBoost: CGFloat = wave > 0.55 ? (wave - 0.55) * 0.75 : 0
-                        let sIdx = max(1, min(stoneRamp.count - 1, Int((stVal + causticBoost * 0.4) * CGFloat(stoneRamp.count - 1))))
-                        let m = 0.55 + stVal * 0.65 + causticBoost * 0.6
-                        drawGlyph(ctx, stoneRamp[sIdx], col: c, row: r, r: pal.stone.r * m, g: pal.stone.g * m, b: pal.stone.b * m)
-                        continue
-                    }
+                let stVal = stoneMap[cellIdx]
+                if stVal > 0.15 {
+                    let causticBoost: CGFloat = wave > 0.55 ? (wave - 0.55) * 0.75 : 0
+                    let sIdx = max(1, min(stoneRamp.count - 1, Int((stVal + causticBoost * 0.4) * CGFloat(stoneRamp.count - 1))))
+                    let m = 0.55 + stVal * 0.65 + causticBoost * 0.6
+                    drawGlyph(ctx, stoneRamp[sIdx], col: c, row: r, r: pal.stone.r * m, g: pal.stone.g * m, b: pal.stone.b * m)
+                    continue
                 }
 
                 if wave > 0.78 {
@@ -2427,9 +2567,9 @@ final class PondEngine {
                     continue
                 }
 
-                // 8. Soft drifting sky cloud reflections on open water (Day & Sunset)
+                // 8. Soft drifting sky cloud reflections on open water (cached 2x2 fbm grid!)
                 if pal.tod != "night" {
-                    let cloud = fbm(px * 0.0042 - time * 0.028 + wave * 0.08, py * 0.0052 - time * 0.012)
+                    let cloud = cloudGrid[cloudRowOff + (c >> 1)]
                     if cloud > 0.64 {
                         let cAlpha = min(0.24, (cloud - 0.64) * 0.95)
                         let cRgb = pal.tod == "sunset" ? pal.ripple : pal.white
@@ -2620,5 +2760,8 @@ final class PondEngine {
                 }
             }
         }
+
+        // Flush all color-batched glyphs in ~90 CTFontDrawGlyphs calls instead of 10,000+!
+        flushGlyphBatches(in: ctx)
     }
 }

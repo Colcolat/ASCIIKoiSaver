@@ -108,8 +108,8 @@ final class MusicMonitor {
         }
         aggregateDeviceID = createdAgg
 
-        // Request ultra-low-latency 128-frame audio buffer (~2.6ms at 48kHz)
-        var bufferFrames: UInt32 = 128
+        // Low-latency 256-frame audio buffer (~5.3ms at 48kHz — half the wakeups of 128 for cool battery life)
+        var bufferFrames: UInt32 = 256
         var bufAddr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyBufferFrameSize,
             mScope: kAudioObjectPropertyScopeGlobal,
