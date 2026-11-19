@@ -219,16 +219,29 @@ private struct Dragonfly {
     var wingPhase: CGFloat
 }
 
+private enum FrogState {
+    case perched
+    case leaping
+    case swimming
+    case climbing
+}
+
 private struct Frog {
     var x: CGFloat
     var y: CGFloat
     var z: CGFloat
     var angle: CGFloat
     var padIdx: Int
-    var swimming: Bool
+    var state: FrogState
     var targetPadIdx: Int
     var swimPhase: CGFloat
     var restTimer: CGFloat
+    var jumpStart: CGPoint = .zero
+    var jumpEnd: CGPoint = .zero
+    var jumpProgress: CGFloat = 0
+    var speed: CGFloat = 0
+    var lookAngle: CGFloat = 0.55
+    var lookTimer: CGFloat = 2.0
 }
 
 private struct LotusPad {
@@ -319,6 +332,7 @@ private enum SampleHit {
     case turtleShell(shade: CGFloat, rim: Bool, depthZ: CGFloat)
     case turtleSkin(shade: CGFloat, depthZ: CGFloat)
     case minnow(t: CGFloat, depthZ: CGFloat)
+    case frog(part: Int, shade: CGFloat, depthZ: CGFloat)
     case shadow(alpha: CGFloat)
 }
 
@@ -1062,7 +1076,7 @@ final class PondEngine {
         }
         dragonfly = Dragonfly(x: width * 0.2, y: height * 0.25, z: 1.75, angle: 0.3, targetX: width * 0.7, targetY: height * 0.3, perched: false, perchPadIdx: -1, stateTimer: 3.5, wingPhase: 0)
         let pad0 = lotusPads.first ?? LotusPad(x: width * 0.13, y: height * 0.21, r: 50, notchAngle: 0.6, flower: true, phase: 0)
-        frog = Frog(x: pad0.x + 12, y: pad0.y + 8, z: 1.02, angle: 0.55, padIdx: 0, swimming: false, targetPadIdx: 0, swimPhase: 0, restTimer: 6)
+        frog = Frog(x: pad0.x + 12, y: pad0.y + 8, z: 1.03, angle: 0.55, padIdx: 0, state: .perched, targetPadIdx: 0, swimPhase: 0, restTimer: 5.5)
         initFireflies()
         leaves.removeAll()
         spawnLeaf(forceVisible: true)
@@ -1662,31 +1676,109 @@ final class PondEngine {
 
     private func updateFrog(_ fr: inout Frog, dt: CGFloat) {
         guard !lotusPads.isEmpty else { return }
-        if !fr.swimming {
+        let s = screenScale()
+
+        switch fr.state {
+        case .perched:
             let pad = lotusPads[fr.padIdx % lotusPads.count]
             fr.x = pad.x + sin(time * 0.55 + pad.phase) * 2.5 + 10
             fr.y = pad.y + cos(time * 0.45 + pad.phase) * 2.0 + 8
-            fr.z = 1.03; fr.restTimer -= dt
-            let startled = fishes.contains { hypot($0.nodes[0].x - fr.x, $0.nodes[0].y - fr.y) < 95 }
-            if startled || fr.restTimer <= 0 {
-                fr.swimming = true
-                fr.targetPadIdx = (fr.padIdx + Int.random(in: 1..<max(2, lotusPads.count))) % lotusPads.count
-                fr.swimPhase = 0
-                spawnSplashBurst(x: fr.x, y: fr.y, count: 6, power: 0.55)
+            fr.z = 1.03
+            fr.restTimer -= dt
+            fr.lookTimer -= dt
+            if fr.lookTimer <= 0 {
+                fr.lookAngle = fr.angle + CGFloat.random(in: -0.9...0.9)
+                fr.lookTimer = CGFloat.random(in: 2.0...4.5)
             }
-        } else {
+            // Gently turn head/body while perched
+            let lookDiff = normalizeAngle(fr.lookAngle - fr.angle)
+            fr.angle += lookDiff * min(1.0, dt * 3.5)
+
+            let startled = fishes.contains { hypot($0.nodes[0].x - fr.x, $0.nodes[0].y - fr.y) < 98 }
+            if startled || fr.restTimer <= 0 {
+                let nextIdx = (fr.padIdx + Int.random(in: 1..<max(2, lotusPads.count))) % lotusPads.count
+                fr.targetPadIdx = nextIdx
+                let tPad = lotusPads[nextIdx]
+                let aimAng = atan2((tPad.y + 8) - fr.y, (tPad.x + 10) - fr.x)
+                fr.angle = aimAng
+                // Leap off the lily pad in a realistic arc into open water past the pad's edge!
+                let leapDist = max(pad.r + 36 * s, 72 * s)
+                fr.jumpStart = CGPoint(x: fr.x, y: fr.y)
+                fr.jumpEnd = CGPoint(
+                    x: max(30, min(width - 30, fr.x + cos(aimAng) * leapDist)),
+                    y: max(30, min(height - 30, fr.y + sin(aimAng) * leapDist))
+                )
+                fr.jumpProgress = 0
+                fr.state = .leaping
+                ripples.append(Ripple(x: fr.x, y: fr.y, r: 4, maxR: 26, alpha: 0.48))
+            }
+
+        case .leaping:
+            fr.jumpProgress += dt * 2.15
+            let p = min(1.0, fr.jumpProgress)
+            fr.x = fr.jumpStart.x + (fr.jumpEnd.x - fr.jumpStart.x) * p
+            fr.y = fr.jumpStart.y + (fr.jumpEnd.y - fr.jumpStart.y) * p
+            // Smooth parabolic jump arc above water!
+            fr.z = 1.02 + sin(p * .pi) * 0.42
+            if p >= 1.0 {
+                // Splash down into the water and begin realistic breaststroke swimming!
+                fr.state = .swimming
+                fr.z = 0.85
+                fr.swimPhase = 0.2
+                fr.speed = 46 * s
+                spawnSplashBurst(x: fr.x, y: fr.y, count: 7, power: 0.58)
+            }
+
+        case .swimming:
             let tPad = lotusPads[fr.targetPadIdx % lotusPads.count]
-            let dx = (tPad.x + 10) - fr.x, dy = (tPad.y + 8) - fr.y
+            let goalX = tPad.x + 10, goalY = tPad.y + 8
+            let dx = goalX - fr.x, dy = goalY - fr.y
             let dist = hypot(dx, dy)
-            fr.angle = atan2(dy, dx)
-            fr.swimPhase += dt * 4.8
-            let kick = 0.45 + 0.95 * max(0, sin(fr.swimPhase))
-            fr.x += cos(fr.angle) * 52 * kick * dt; fr.y += sin(fr.angle) * 52 * kick * dt
-            fr.z = 0.94
-            if sin(fr.swimPhase) > 0.94 { ripples.append(Ripple(x: fr.x, y: fr.y, r: 3, maxR: 22, alpha: 0.42)) }
-            if dist < tPad.r * 0.45 {
-                fr.swimming = false; fr.padIdx = fr.targetPadIdx; fr.restTimer = CGFloat.random(in: 7...15)
-                ripples.append(Ripple(x: fr.x, y: fr.y, r: 2, maxR: 24, alpha: 0.52))
+            let desiredAng = atan2(dy, dx)
+            let angDiff = normalizeAngle(desiredAng - fr.angle)
+            fr.angle += max(-2.4 * dt, min(2.4 * dt, angDiff))
+
+            // Authentic frog breaststroke: crisp kick pulse followed by smooth water glide!
+            let prevSin = sin(fr.swimPhase)
+            fr.swimPhase += dt * 4.2
+            let curSin = sin(fr.swimPhase)
+            let kickPower = max(0, curSin)
+            let targetSpd = (18 + 72 * pow(kickPower, 1.4)) * s
+            fr.speed += (targetSpd - fr.speed) * min(1.0, dt * (kickPower > 0.2 ? 9.0 : 2.6))
+            fr.x += cos(fr.angle) * fr.speed * dt
+            fr.y += sin(fr.angle) * fr.speed * dt
+            // Gently bob just beneath/at the water surface as it kicks and glides
+            fr.z = 0.82 + 0.08 * kickPower
+
+            // Wake ripple on every strong hind-leg kick!
+            if prevSin <= 0.85 && curSin > 0.85 {
+                let rearX = fr.x - cos(fr.angle) * 14 * s
+                let rearY = fr.y - sin(fr.angle) * 14 * s
+                ripples.append(Ripple(x: rearX, y: rearY, r: 3, maxR: 28, alpha: 0.48))
+            }
+
+            // Reached the edge of the target lily pad -> hop up onto it!
+            if dist < tPad.r + 14 * s {
+                fr.jumpStart = CGPoint(x: fr.x, y: fr.y)
+                fr.jumpEnd = CGPoint(x: goalX, y: goalY)
+                fr.jumpProgress = 0
+                fr.state = .climbing
+                ripples.append(Ripple(x: fr.x, y: fr.y, r: 3, maxR: 26, alpha: 0.54))
+            }
+
+        case .climbing:
+            fr.jumpProgress += dt * 2.8
+            let p = min(1.0, fr.jumpProgress)
+            fr.x = fr.jumpStart.x + (fr.jumpEnd.x - fr.jumpStart.x) * p
+            fr.y = fr.jumpStart.y + (fr.jumpEnd.y - fr.jumpStart.y) * p
+            fr.z = 0.90 + sin(p * .pi) * 0.28 + p * 0.13
+            if p >= 1.0 {
+                fr.state = .perched
+                fr.padIdx = fr.targetPadIdx
+                fr.z = 1.03
+                fr.restTimer = CGFloat.random(in: 7.5...16.0)
+                fr.lookAngle = fr.angle
+                fr.lookTimer = CGFloat.random(in: 1.5...3.5)
             }
         }
     }
@@ -2080,8 +2172,14 @@ final class PondEngine {
             return (0, 0.62)
         }
 
-        // 4. Articulated Hind Legs (folded Z-shape when resting, powerful backward kick when swimming!)
-        let kick: CGFloat = fr.swimming ? max(0, sin(fr.swimPhase)) : 0.0
+        // 4. Articulated Hind Legs (folded Z-shape when perched, fully extended mid-leap, rhythmic breaststroke kick when swimming!)
+        let kick: CGFloat
+        switch fr.state {
+        case .perched: kick = 0.0
+        case .leaping: kick = sin(min(1.0, fr.jumpProgress) * .pi) * 1.15
+        case .climbing: kick = (1.0 - min(1.0, fr.jumpProgress)) * 0.75
+        case .swimming: kick = pow(max(0, sin(fr.swimPhase)), 0.85) * 1.05
+        }
         // Upper thigh
         let thighX = lx - (-6.8 - kick * 4.5)
         let thighY = absY - (10.5 + kick * 2.0)
@@ -2606,6 +2704,16 @@ final class PondEngine {
                     minR: max(0, Int(floor((m.y - 36) / cellH))), maxR: min(rows - 1, Int(ceil((m.y + 36 + shY) / cellH)))
                 ))
             }
+            // When swimming IN the water, Z-sort the frog with Koi/turtle so it swims properly UNDER lily pads!
+            if let fr = frog, fr.state == .swimming {
+                let fPad = 48 * screenScale()
+                let shX = 6 + fr.z * 24, shY = 5 + fr.z * 20
+                actors.append(ActorBox(
+                    kind: 3, index: 0, z: fr.z, shX: shX, shY: shY,
+                    minC: max(0, Int(floor((fr.x - fPad) / cellW))), maxC: min(cols - 1, Int(ceil((fr.x + fPad + shX) / cellW))),
+                    minR: max(0, Int(floor((fr.y - fPad) / cellH))), maxR: min(rows - 1, Int(ceil((fr.y + fPad + shY) / cellH)))
+                ))
+            }
         }
         actors.sort { $0.z > $1.z }
 
@@ -2661,12 +2769,14 @@ final class PondEngine {
                             if ac.kind == 0 { hit = sampleKoi(fishes[ac.index], px, py, shadowOnly: false) }
                             else if ac.kind == 1, let tr = turtle { hit = sampleTurtle(tr, px, py, shadowOnly: false) }
                             else if ac.kind == 2 { hit = sampleMinnow(minnows[ac.index], px, py, shadowOnly: false) }
+                            else if ac.kind == 3, let fr = frog, let fh = sampleFrog(fr, px, py) { hit = .frog(part: fh.part, shade: fh.shade, depthZ: fr.z) }
                             if hit != nil { break }
                         }
                         if shadowHit == nil {
                             if ac.kind == 0 { shadowHit = sampleKoi(fishes[ac.index], px - ac.shX, py - ac.shY, shadowOnly: true) }
                             else if ac.kind == 1, let tr = turtle { shadowHit = sampleTurtle(tr, px - ac.shX, py - ac.shY, shadowOnly: true) }
                             else if ac.kind == 2 { shadowHit = sampleMinnow(minnows[ac.index], px - ac.shX, py - ac.shY, shadowOnly: true) }
+                            else if ac.kind == 3, let fr = frog, sampleFrog(fr, px - ac.shX, py - ac.shY) != nil { shadowHit = .shadow(alpha: 0.55) }
                         }
                     }
                 }
@@ -2731,6 +2841,20 @@ final class PondEngine {
                     case .minnow(let t, let depthZ):
                         dz = depthZ
                         drawDepthGlyph(ctx, t < 0.25 ? "o" : (t < 0.72 ? "=" : "~"), col: c, row: r, rgb: pal.minnow, z: depthZ, pal: pal, mult: 1.0, alpha: t > 0.72 ? 0.65 : 0.92)
+                    case .frog(let part, let shade, let depthZ):
+                        dz = depthZ
+                        switch part {
+                        case 3:
+                            drawDepthGlyph(ctx, "@", col: c, row: r, rgb: pal.eye, z: depthZ, pal: pal, mult: 1.0)
+                        case 2:
+                            drawDepthGlyph(ctx, "o", col: c, row: r, rgb: pal.gold, z: depthZ, pal: pal, mult: 1.05)
+                        case 1:
+                            let m = 0.55 + shade * 0.45
+                            drawDepthGlyph(ctx, shade > 0.65 ? "#" : "%", col: c, row: r, rgb: RGB(pal.frog.r * 255 * 0.72, pal.frog.g * 255 * 0.88, pal.frog.b * 255 * 0.72), z: depthZ, pal: pal, mult: m)
+                        default:
+                            let idx = max(2, min(shadeRamp.count - 1, Int(shade * CGFloat(shadeRamp.count - 1))))
+                            drawDepthGlyph(ctx, shadeRamp[idx], col: c, row: r, rgb: pal.frog, z: depthZ, pal: pal, mult: 0.72 + shade * 0.48)
+                        }
                     case .shadow: break
                     }
                     if let rCh = rippleCh, rippleAlpha > 0.32 && dz <= 1.0 {
@@ -2879,16 +3003,17 @@ final class PondEngine {
             }
         }
 
-        // Detailed Procedural Pond Frog (with shadow, bulging eyes, spots & kicking hind legs!)
-        if !config.minimalistMode, let fr = frog {
-            let fPad = 40 * screenScale()
+        // Perched / Leaping / Climbing Frog (ABOVE lily pads, BELOW elevated leaves & tree branch!)
+        if !config.minimalistMode, let fr = frog, fr.state != .swimming {
+            let h = max(0, fr.z - 1.0)
+            let shOffX: CGFloat = 5 + h * 34
+            let shOffY: CGFloat = 4 + h * 28
+            let fPad = 48 * screenScale()
             let fMinC = max(0, Int(floor((fr.x - fPad) / cellW)))
-            let fMaxC = min(cols - 1, Int(ceil((fr.x + fPad) / cellW)))
+            let fMaxC = min(cols - 1, Int(ceil((fr.x + fPad + shOffX) / cellW)))
             let fMinR = max(0, Int(floor((fr.y - fPad) / cellH)))
-            let fMaxR = min(rows - 1, Int(ceil((fr.y + fPad) / cellH)))
+            let fMaxR = min(rows - 1, Int(ceil((fr.y + fPad + shOffY) / cellH)))
             if fMinR <= fMaxR && fMinC <= fMaxC {
-                let shOffX: CGFloat = fr.swimming ? 14 : 5
-                let shOffY: CGFloat = fr.swimming ? 12 : 4
                 for r in fMinR...fMaxR {
                     let py = (CGFloat(r) + 0.5) * cellH
                     for c in fMinC...fMaxC {
@@ -2908,7 +3033,7 @@ final class PondEngine {
                                 drawGlyph(ctx, shadeRamp[idx], col: c, row: r, r: pal.frog.r * m, g: pal.frog.g * m, b: pal.frog.b * m)
                             }
                         } else if sampleFrog(fr, px - shOffX, py - shOffY) != nil {
-                            drawGlyph(ctx, ":", col: c, row: r, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.75)
+                            drawGlyph(ctx, h > 0.14 ? "·" : ":", col: c, row: r, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * max(0.38, 0.78 - h * 0.65))
                         }
                     }
                 }
