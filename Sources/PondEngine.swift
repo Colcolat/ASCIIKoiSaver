@@ -30,6 +30,8 @@ struct SaverConfig {
     var minimalistMode: Bool = false
     var musicReactive: Bool = true
     var treeBranch: String = "bottomRight" // none | topRight | topLeft | bottomRight | bottomLeft
+    var treeLantern: Bool = true           // Hanging warm glowing Chochin lantern on the tree branch
+    var cloudDensity: CGFloat = 0.90       // 0.30 (clear) .. 1.45 (overcast), driven by Live Weather
     var isPreview: Bool = false
 }
 
@@ -427,7 +429,19 @@ final class PondEngine {
     private var branchCells: [BranchCell] = []
     private var branchShadowCells: [(col: Int, row: Int, ch: Character, swayWeight: CGFloat)] = []
     private var branchTipPoints: [CGPoint] = []
+    private var branchLanternAnchor: CGPoint? = nil
     private var branchCacheKey: String = ""
+
+    // Visible falling raindrops (lightweight: max ~18 drops -> ~0.02ms/frame!)
+    private struct RainDrop {
+        var x: CGFloat
+        var y: CGFloat
+        var z: CGFloat // falls from ~2.2 down to 1.0 (water surface)
+        var vx: CGFloat
+        var vy: CGFloat
+        var vz: CGFloat
+    }
+    private var rainDrops: [RainDrop] = []
 
     init() {
         setupFont(size: 10.4)
@@ -1221,10 +1235,36 @@ final class PondEngine {
 
         if config.rainOn {
             rainTimer -= dt
-            if rainTimer <= 0 {
-                ripples.append(Ripple(x: CGFloat.random(in: 20...max(21, width - 20)), y: CGFloat.random(in: 20...max(21, height - 20)), r: 2, maxR: CGFloat.random(in: 28...56), alpha: 0.58))
-                rainTimer = CGFloat.random(in: 0.16...0.40)
+            if rainTimer <= 0 && rainDrops.count < 20 {
+                let s = screenScale()
+                let landX = CGFloat.random(in: 30...max(31, width - 30))
+                let landY = CGFloat.random(in: 30...max(31, height - 30))
+                let fallTime: CGFloat = CGFloat.random(in: 0.34...0.52)
+                let vx: CGFloat = -68 * s
+                let vy: CGFloat = 240 * s
+                rainDrops.append(RainDrop(
+                    x: landX - vx * fallTime,
+                    y: landY - vy * fallTime,
+                    z: 1.0 + fallTime * 2.4,
+                    vx: vx, vy: vy, vz: -2.4
+                ))
+                rainTimer = CGFloat.random(in: 0.08...0.22)
             }
+        }
+        var rdIdx = rainDrops.count - 1
+        while rdIdx >= 0 {
+            rainDrops[rdIdx].x += rainDrops[rdIdx].vx * dt
+            rainDrops[rdIdx].y += rainDrops[rdIdx].vy * dt
+            rainDrops[rdIdx].z += rainDrops[rdIdx].vz * dt
+            if rainDrops[rdIdx].z <= 1.0 {
+                let rd = rainDrops[rdIdx]
+                if rd.x >= 0 && rd.x <= width && rd.y >= 0 && rd.y <= height {
+                    ripples.append(Ripple(x: rd.x, y: rd.y, r: 2, maxR: CGFloat.random(in: 28...58), alpha: 0.68))
+                    splashes.append(Splash(x: rd.x, y: rd.y, z: 1.02, vx: CGFloat.random(in: -14...14), vy: CGFloat.random(in: -12...12), vz: CGFloat.random(in: 0.8...1.5), big: false))
+                }
+                rainDrops.remove(at: rdIdx)
+            }
+            rdIdx -= 1
         }
 
         var idx = ripples.count - 1
@@ -2256,6 +2296,7 @@ final class PondEngine {
         branchCells.removeAll(keepingCapacity: true)
         branchShadowCells.removeAll(keepingCapacity: true)
         branchTipPoints.removeAll(keepingCapacity: true)
+        branchLanternAnchor = nil
 
         guard config.treeBranch != "none", cols > 20, rows > 12 else { return }
 
@@ -2395,6 +2436,9 @@ final class PondEngine {
         for (idx, cl) in clusters.enumerated() {
             addFoliageCluster(center: toWorld(cl.0, cl.1), radius: cl.2 * s, sway: cl.3, seed: idx + 1)
         }
+
+        // Pin the hanging lantern anchor nicely under the mid-outer sweeping bough
+        branchLanternAnchor = toWorld(0.62, 0.36)
 
         branchCells = Array(cellMap.values)
     }
@@ -2728,18 +2772,51 @@ final class PondEngine {
 
                 if config.minimalistMode { continue }
 
-                // 7. Moon reflection & stones & caustics
+                // 7. Sun / Moon reflection & stones & caustics
                 let wave = sin(CGFloat(c) * 0.14 + time * 0.75 + rowWaveSin) *
                            cos(rowWaveCosBase + CGFloat(c) * 0.05)
 
                 if pal.tod == "night" {
-                    let mdx = (px - moonX) * 0.9, mdy = (py - moonY) * 1.15
-                    if abs(mdx) < 64 && abs(mdy) < 64 {
+                    // Luminous silver-cyan Moon reflection + shimmering vertical water trail
+                    let mdx = (px - moonX) * 0.85, mdy = (py - moonY) * 1.05
+                    if abs(mdx) < 76 && abs(mdy) < 115 {
                         let md = hypot(mdx, mdy)
-                        if md < 52 + wave * 12 {
-                            let mAlpha = (1 - md / 64) * (0.28 + 0.25 * max(0, wave))
-                            if mAlpha > 0.08 {
-                                drawGlyph(ctx, md < 26 ? "~" : "·", col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: mAlpha)
+                        if md < 54 + wave * 10 {
+                            let core = md < 22
+                            let mAlpha = min(0.88, (1 - md / 66) * (core ? 0.85 : 0.56) + max(0, wave) * 0.24)
+                            if mAlpha > 0.10 {
+                                let mCh: Character = md < 14 ? "O" : (md < 26 ? "@" : (md < 40 ? "~" : "·"))
+                                drawGlyph(ctx, mCh, col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: mAlpha)
+                                continue
+                            }
+                        } else if mdy > 30 && mdy < 110 && abs(mdx) < (42 - (mdy - 30) * 0.25) + wave * 12 {
+                            // Gentle rippling moonbeam bars on the water below the moon
+                            if wave > 0.22 {
+                                let trailA = max(0, (1.0 - (mdy - 30) / 85.0)) * 0.52
+                                drawGlyph(ctx, wave > 0.58 ? "=" : "~", col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: trailA)
+                                continue
+                            }
+                        }
+                    }
+                } else {
+                    // Shimmering Sun reflection (pale warm gold at Day, glowing amber-orange at Sunset/Afternoon)
+                    let sunX = pal.tod == "sunset" ? width * 0.26 : width * 0.74
+                    let sunY = pal.tod == "sunset" ? height * 0.28 : height * 0.24
+                    let sdx = (px - sunX) * 0.85, sdy = (py - sunY) * 1.0
+                    if abs(sdx) < 88 && abs(sdy) < 125 {
+                        let sd = hypot(sdx, sdy)
+                        let sunRgb = pal.tod == "sunset" ? RGB(255, 178, 92) : RGB(255, 246, 198)
+                        if sd < 58 + wave * 12 {
+                            let sAlpha = min(0.76, (1 - sd / 70) * (sd < 24 ? 0.72 : 0.44) + max(0, wave) * 0.22)
+                            if sAlpha > 0.08 {
+                                let sCh: Character = sd < 16 ? "@" : (sd < 30 ? "*" : (sd < 46 ? "~" : "·"))
+                                drawGlyph(ctx, sCh, col: c, row: r, r: sunRgb.r, g: sunRgb.g, b: sunRgb.b, a: sAlpha)
+                                continue
+                            }
+                        } else if sdy > 32 && sdy < 120 && abs(sdx) < (48 - (sdy - 32) * 0.22) + wave * 14 {
+                            if wave > 0.18 {
+                                let trailA = max(0, (1.0 - (sdy - 32) / 92.0)) * (pal.tod == "sunset" ? 0.55 : 0.42)
+                                drawGlyph(ctx, wave > 0.55 ? "=" : "~", col: c, row: r, r: sunRgb.r, g: sunRgb.g, b: sunRgb.b, a: trailA)
                                 continue
                             }
                         }
@@ -2760,29 +2837,33 @@ final class PondEngine {
                     continue
                 }
 
-                // 8. Soft drifting sky cloud reflections on open water (cached 2x2 fbm grid!)
+                // 8. Clearer drifting sky cloud reflections on open water (scaled by Live Weather cloudDensity!)
                 if pal.tod != "night" {
                     let cloud = cloudGrid[cloudRowOff + (c >> 1)]
-                    if cloud > 0.64 {
-                        let cAlpha = min(0.24, (cloud - 0.64) * 0.95)
-                        let cRgb = pal.tod == "sunset" ? pal.ripple : pal.white
-                        drawGlyph(ctx, cloud > 0.74 ? "~" : "·", col: c, row: r, r: cRgb.r, g: cRgb.g, b: cRgb.b, a: cAlpha)
+                    let cloudThresh = max(0.46, 0.72 - config.cloudDensity * 0.16)
+                    if cloud > cloudThresh {
+                        let excess = (cloud - cloudThresh) / max(0.15, 1.0 - cloudThresh)
+                        let cAlpha = min(0.48, excess * 0.58 * min(1.25, config.cloudDensity))
+                        let cRgb = pal.tod == "sunset" ? RGB(248, 196, 172) : pal.white
+                        let cCh: Character = excess > 0.62 ? "=" : (excess > 0.28 ? "~" : "·")
+                        drawGlyph(ctx, cCh, col: c, row: r, r: cRgb.r, g: cRgb.g, b: cRgb.b, a: cAlpha)
                     }
                 }
             }
         }
 
-        // Twinkling reflected stars on open water at Night
+        // Twinkling reflected stars on open water at Night (crisp & clearly visible!)
         if !config.minimalistMode && pal.tod == "night" {
             for st in stars {
                 if sampleLotus(st.x, st.y) != nil { continue }
                 let twinkle = sin(time * st.spd + st.phase)
-                if twinkle > 0.20 {
+                if twinkle > -0.05 {
                     let wx = st.x + sin(time * 1.4 + st.phase) * 2.2
                     let sc = Int(wx / cellW), sr = Int(st.y / cellH)
                     if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
-                        let ch: Character = twinkle > 0.82 ? "*" : (twinkle > 0.52 ? "+" : "·")
-                        drawGlyph(ctx, ch, col: sc, row: sr, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: (twinkle - 0.15) * 0.68)
+                        let ch: Character = twinkle > 0.70 ? "*" : (twinkle > 0.30 ? "+" : "·")
+                        let sAlpha = min(0.92, (twinkle + 0.18) * 0.82)
+                        drawGlyph(ctx, ch, col: sc, row: sr, r: min(1, pal.moon.r * 1.1), g: min(1, pal.moon.g * 1.1), b: min(1, pal.moon.b * 1.1), a: sAlpha)
                     }
                 }
             }
@@ -2899,6 +2980,19 @@ final class PondEngine {
             }
         }
 
+        // Visible falling raindrops (angled silver-blue streaks descending into surface ripples)
+        for rd in rainDrops {
+            let rc = Int(rd.x / cellW), rr = Int(rd.y / cellH)
+            let h = max(0, rd.z - 1.0)
+            let dropA = min(0.88, 0.45 + (1.0 - min(1.0, h * 0.6)) * 0.45)
+            if rc >= 0 && rc < cols && rr >= 0 && rr < rows {
+                drawGlyph(ctx, "/", col: rc, row: rr, r: pal.splash.r, g: pal.splash.g, b: pal.splash.b, a: dropA)
+            }
+            if rc + 1 >= 0 && rc + 1 < cols && rr - 1 >= 0 && rr - 1 < rows {
+                drawGlyph(ctx, "'", col: rc + 1, row: rr - 1, r: pal.ripple.r, g: pal.ripple.g, b: pal.ripple.b, a: dropA * 0.62)
+            }
+        }
+
         // Splash droplets
         for sp in splashes {
             let sc = Int(sp.x / cellW), sr = Int(sp.y / cellH)
@@ -2986,6 +3080,66 @@ final class PondEngine {
                 default:
                     let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
                     drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * 1.15), g: min(1, rgb.g * 1.15), b: min(1, rgb.b * 1.15), a: 0.98)
+                }
+            }
+
+            // 3. Hanging Japanese Chochin Lantern emitting warm golden light on water & foliage
+            if config.treeLantern, let anchor = branchLanternAnchor {
+                let swing = sin(time * 1.15) * 1.4
+                let flicker = 0.92 + 0.08 * sin(time * 6.8 + sin(time * 2.3))
+                let ac = Int(anchor.x / cellW) + Int(round(breeze * 0.65))
+                let ar = Int(anchor.y / cellH)
+                // Hang downward when branch is at top, or gently below-left when branch is at bottom
+                let cordLen = 3
+                let lc = ac + Int(round(swing))
+                let lr = min(rows - 5, ar + cordLen)
+
+                // Warm radial light halo & water shimmer below the lantern (~14x10 box -> ~0.03ms/frame!)
+                let glowStrength: CGFloat = (pal.tod == "night" ? 1.0 : (pal.tod == "sunset" ? 0.78 : 0.36)) * flicker
+                let glowRgb = config.monoMode ? pal.white : RGB(255, 198, 96)
+                let warmCore = config.monoMode ? pal.white : RGB(255, 240, 175)
+                let glowRadC = 9, glowRadR = 6
+                for gr in max(0, lr - glowRadR)...min(rows - 1, lr + glowRadR + 3) {
+                    let dy = CGFloat(gr - (lr + 1)) * 1.45
+                    for gc in max(0, lc - glowRadC)...min(cols - 1, lc + glowRadC) {
+                        let dx = CGFloat(gc - lc) * 0.85
+                        let d = hypot(dx, dy)
+                        if d > 2.2 && d < 8.5 {
+                            let falloff = pow(1.0 - d / 8.5, 1.65) * glowStrength
+                            if falloff > 0.08 {
+                                let shimmer = sin(CGFloat(gc) * 0.6 + time * 2.2 + CGFloat(gr) * 0.4)
+                                let gCh: Character = gr > lr + 2 ? (shimmer > 0.2 ? "~" : "·") : "·"
+                                drawGlyph(ctx, gCh, col: gc, row: gr, r: glowRgb.r, g: glowRgb.g, b: glowRgb.b, a: min(0.68, falloff * 0.62))
+                            }
+                        }
+                    }
+                }
+
+                // Hanging cord
+                for k in 0..<cordLen {
+                    let cy = ar + k
+                    let cx = ac + Int(round(swing * CGFloat(k) / CGFloat(cordLen)))
+                    if cx >= 0 && cx < cols && cy >= 0 && cy < rows {
+                        drawGlyph(ctx, "|", col: cx, row: cy, r: barkLight.r, g: barkLight.g, b: barkLight.b, a: 0.90)
+                    }
+                }
+                // Paper lantern body (cap, warm glowing core, tassel)
+                let capRgb = config.monoMode ? pal.stone : RGB(96, 54, 42)
+                let paperRgb = config.monoMode ? pal.white : RGB(255, 168, 72)
+                if lc >= 2 && lc < cols - 2 && lr >= 1 && lr < rows - 3 {
+                    drawGlyph(ctx, "=", col: lc - 1, row: lr, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.98)
+                    drawGlyph(ctx, "=", col: lc,     row: lr, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.98)
+                    drawGlyph(ctx, "=", col: lc + 1, row: lr, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.98)
+
+                    drawGlyph(ctx, "(", col: lc - 1, row: lr + 1, r: paperRgb.r, g: paperRgb.g, b: paperRgb.b, a: 0.96)
+                    drawGlyph(ctx, "@", col: lc,     row: lr + 1, r: warmCore.r * flicker, g: warmCore.g * flicker, b: warmCore.b * flicker, a: 1.0)
+                    drawGlyph(ctx, ")", col: lc + 1, row: lr + 1, r: paperRgb.r, g: paperRgb.g, b: paperRgb.b, a: 0.96)
+
+                    drawGlyph(ctx, "(", col: lc - 1, row: lr + 2, r: paperRgb.r * 0.92, g: paperRgb.g * 0.92, b: paperRgb.b * 0.92, a: 0.95)
+                    drawGlyph(ctx, "#", col: lc,     row: lr + 2, r: glowRgb.r * flicker, g: glowRgb.g * flicker, b: glowRgb.b * flicker, a: 0.98)
+                    drawGlyph(ctx, ")", col: lc + 1, row: lr + 2, r: paperRgb.r * 0.92, g: paperRgb.g * 0.92, b: paperRgb.b * 0.92, a: 0.95)
+
+                    drawGlyph(ctx, "=", col: lc, row: lr + 3, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.96)
                 }
             }
         }

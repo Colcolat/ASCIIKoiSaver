@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import IOKit.ps
 import QuartzCore
 
 private final class DesktopPondView: NSView {
@@ -19,8 +20,16 @@ final class DesktopWallpaperManager {
     private var renderTimer: Timer?
     private var currentFPS: Double = 24.0
     private var visibilityTimer: Timer?
+    private var batteryTimer: Timer?
     private var clickMonitor: Any?
     private var lastTimestamp: CFTimeInterval = 0
+
+    var autoLowPowerOnBattery: Bool = true {
+        didSet { checkBatteryState() }
+    }
+    private(set) var isOnBattery: Bool = false
+    private(set) var batteryPercent: Int = 100
+    var isLowPowerActive: Bool { autoLowPowerOnBattery && isOnBattery }
 
     var config = SaverConfig() {
         didSet {
@@ -57,11 +66,19 @@ final class DesktopWallpaperManager {
             self?.checkVisibility()
         }
         checkVisibility()
+
+        batteryTimer?.invalidate()
+        batteryTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
+            self?.checkBatteryState()
+        }
+        batteryTimer?.tolerance = 5.0
+        checkBatteryState()
     }
 
     func stop() {
         renderTimer?.invalidate(); renderTimer = nil
         visibilityTimer?.invalidate(); visibilityTimer = nil
+        batteryTimer?.invalidate(); batteryTimer = nil
         if let mon = clickMonitor { NSEvent.removeMonitor(mon); clickMonitor = nil }
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
@@ -237,6 +254,33 @@ final class DesktopWallpaperManager {
         onStatusChanged?(shouldRun, isAutoPaused)
     }
 
+    private func checkBatteryState() {
+        var onBat = false
+        var pct = 100
+        if let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+           let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] {
+            for src in sources {
+                if let desc = IOPSGetPowerSourceDescription(info, src)?.takeUnretainedValue() as? [String: Any] {
+                    if let state = desc[kIOPSPowerSourceStateKey as String] as? String {
+                        onBat = (state == kIOPSBatteryPowerValue as String)
+                    }
+                    if let cur = desc[kIOPSCurrentCapacityKey as String] as? Int,
+                       let cap = desc[kIOPSMaxCapacityKey as String] as? Int, cap > 0 {
+                        pct = max(0, min(100, Int(Double(cur) / Double(cap) * 100.0)))
+                    }
+                    break
+                }
+            }
+        }
+        let changed = (onBat != isOnBattery) || (pct != batteryPercent)
+        isOnBattery = onBat
+        batteryPercent = pct
+        if changed {
+            let running = !manuallyPaused && !isAutoPaused && !isScreenLocked
+            onStatusChanged?(running, isAutoPaused)
+        }
+    }
+
     private func startRenderTimer(fps: Double) {
         renderTimer?.invalidate()
         currentFPS = fps
@@ -244,8 +288,8 @@ final class DesktopWallpaperManager {
         let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
-        // Small tolerance lets Apple Silicon schedule idle frames on Efficiency cores (cool & quiet!)
-        timer.tolerance = fps <= 25.0 ? 0.005 : 0.001
+        // Larger tolerance in Low Power lets Apple Silicon coalesce frames onto Efficiency cores
+        timer.tolerance = fps <= 16.0 ? 0.014 : (fps <= 25.0 ? 0.005 : 0.001)
         renderTimer = timer
     }
 
@@ -255,8 +299,17 @@ final class DesktopWallpaperManager {
         lastTimestamp = now
         let audio = audioFrameProvider?() ?? (bass: 0, beatHit: 0, playing: false)
 
-        // Adaptive FPS: 36 FPS when music beats are active, 24 FPS when calm/idle (massive heat savings!)
-        let desiredFPS: Double = (config.musicReactive && audio.playing) ? 36.0 : 24.0
+        // Adaptive FPS: ultra-cool Low Power on battery (14–16 FPS), 24 FPS AC idle, 36 FPS AC music
+        let desiredFPS: Double
+        if isLowPowerActive {
+            if batteryPercent <= 25 {
+                desiredFPS = 14.0
+            } else {
+                desiredFPS = (config.musicReactive && audio.playing) ? 24.0 : 16.0
+            }
+        } else {
+            desiredFPS = (config.musicReactive && audio.playing) ? 36.0 : 24.0
+        }
         if desiredFPS != currentFPS {
             startRenderTimer(fps: desiredFPS)
         }

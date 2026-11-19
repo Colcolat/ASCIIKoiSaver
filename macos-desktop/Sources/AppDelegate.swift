@@ -8,14 +8,18 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     private let agentMonitor = AgentMonitor()
     private let trashMonitor = TrashMonitor()
     private let musicMonitor = MusicMonitor()
+    private let weatherMonitor = WeatherMonitor()
 
     private var statusMenuItem: NSMenuItem!
     private var agentsMenuItem: NSMenuItem!
     private var musicMenuItem: NSMenuItem!
+    private var weatherMenuItem: NSMenuItem!
+    private var rainMenuItem: NSMenuItem!
     private var feedTrashMenuItem: NSMenuItem!
     private var pauseMenuItem: NSMenuItem!
 
     private var config = SaverConfig()
+    private var liveWeatherEnabled: Bool = true
 
     static func main() {
         let app = NSApplication.shared
@@ -38,7 +42,12 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
                 } else if autoPaused {
                     self.statusMenuItem.title = "Status: Auto-Paused (Fullscreen)"
                 } else if running {
-                    self.statusMenuItem.title = "Status: Active (Desktop)"
+                    if self.wallpaper.isLowPowerActive {
+                        let fps = self.wallpaper.batteryPercent <= 25 ? 14 : 16
+                        self.statusMenuItem.title = "Status: Active · Low Power (\(fps) FPS · \(self.wallpaper.batteryPercent)%)"
+                    } else {
+                        self.statusMenuItem.title = "Status: Active (Desktop)"
+                    }
                 }
             }
         }
@@ -89,9 +98,26 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         } else {
             musicMenuItem.title = "Music: Off"
         }
+
+        weatherMonitor.onWeatherUpdated = { [weak self] st in
+            guard let self = self else { return }
+            self.weatherMenuItem.title = st.summary
+            if self.liveWeatherEnabled {
+                self.config.cloudDensity = st.cloudDensity
+                self.config.rainOn = st.isRaining
+                self.rainMenuItem?.state = st.isRaining ? .on : .off
+                self.wallpaper.config = self.config
+            }
+        }
+        if liveWeatherEnabled {
+            weatherMonitor.start()
+        } else {
+            weatherMenuItem.title = "Weather: Manual"
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        weatherMonitor.stop()
         musicMonitor.stop()
         agentMonitor.stop()
         trashMonitor.stop()
@@ -112,6 +138,9 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         config.minimalistMode = d.bool(forKey: "minimalistMode")
         config.musicReactive = d.object(forKey: "musicReactive") == nil ? true : d.bool(forKey: "musicReactive")
         config.treeBranch = d.string(forKey: "treeBranch") ?? "bottomRight"
+        config.treeLantern = d.object(forKey: "treeLantern") == nil ? true : d.bool(forKey: "treeLantern")
+        liveWeatherEnabled = d.object(forKey: "liveWeather") == nil ? true : d.bool(forKey: "liveWeather")
+        wallpaper.autoLowPowerOnBattery = d.object(forKey: "autoLowPower") == nil ? true : d.bool(forKey: "autoLowPower")
         wallpaper.desktopClicksEnabled = d.object(forKey: "desktopClicks") == nil ? true : d.bool(forKey: "desktopClicks")
     }
 
@@ -126,6 +155,9 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         d.set(config.minimalistMode, forKey: "minimalistMode")
         d.set(config.musicReactive, forKey: "musicReactive")
         d.set(config.treeBranch, forKey: "treeBranch")
+        d.set(config.treeLantern, forKey: "treeLantern")
+        d.set(liveWeatherEnabled, forKey: "liveWeather")
+        d.set(wallpaper.autoLowPowerOnBattery, forKey: "autoLowPower")
         d.set(wallpaper.desktopClicksEnabled, forKey: "desktopClicks")
         wallpaper.config = config
     }
@@ -153,6 +185,10 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         musicMenuItem = NSMenuItem(title: "Music: Idle", action: nil, keyEquivalent: "")
         musicMenuItem.isEnabled = false
         menu.addItem(musicMenuItem)
+
+        weatherMenuItem = NSMenuItem(title: "Weather: Checking…", action: nil, keyEquivalent: "")
+        weatherMenuItem.isEnabled = false
+        menu.addItem(weatherMenuItem)
 
         menu.addItem(.separator())
 
@@ -239,6 +275,12 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
             item.target = self
             branchSub.addItem(item)
         }
+        branchSub.addItem(.separator())
+        let lanternItem = NSMenuItem(title: "Hanging Tree Lantern (Warm Glow)", action: #selector(toggleTreeLantern(_:)), keyEquivalent: "")
+        lanternItem.state = config.treeLantern ? .on : .off
+        lanternItem.target = self
+        branchSub.addItem(lanternItem)
+
         let branchItem = NSMenuItem(title: "Tree Branch", action: nil, keyEquivalent: "")
         branchItem.submenu = branchSub
         menu.addItem(branchItem)
@@ -246,16 +288,20 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         // Toggles
-        func addToggle(_ title: String, isOn: Bool, action: Selector) {
+        @discardableResult
+        func addToggle(_ title: String, isOn: Bool, action: Selector) -> NSMenuItem {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.state = isOn ? .on : .off
             item.target = self
             menu.addItem(item)
+            return item
         }
         addToggle("Minimalist Mode (Transparent over Wallpaper)", isOn: config.minimalistMode, action: #selector(toggleMinimalist(_:)))
         addToggle("Music Reactive ♪", isOn: config.musicReactive, action: #selector(toggleMusicReactive(_:)))
+        addToggle("Live Weather Sync (Auto Rain & Clouds)", isOn: liveWeatherEnabled, action: #selector(toggleLiveWeather(_:)))
+        addToggle("Auto Low Power on Battery (14–16 FPS)", isOn: wallpaper.autoLowPowerOnBattery, action: #selector(toggleAutoLowPower(_:)))
         addToggle("Submerged Stone Clock", isOn: config.showClock, action: #selector(toggleClock(_:)))
-        addToggle("Gentle Rain", isOn: config.rainOn, action: #selector(toggleRain(_:)))
+        rainMenuItem = addToggle("Gentle Rain", isOn: config.rainOn, action: #selector(toggleRain(_:)))
         addToggle("Pure ASCII Mode (Monochrome)", isOn: config.monoMode, action: #selector(toggleMono(_:)))
         addToggle("Desktop Click Ripples", isOn: wallpaper.desktopClicksEnabled, action: #selector(toggleDesktopClicks(_:)))
 
@@ -335,7 +381,36 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     @objc private func selectTreeBranch(_ sender: NSMenuItem) {
         guard let val = sender.representedObject as? String else { return }
         config.treeBranch = val
-        sender.menu?.items.forEach { $0.state = ($0 == sender) ? .on : .off }
+        sender.menu?.items.forEach {
+            if $0.action == #selector(selectTreeBranch(_:)) {
+                $0.state = ($0 == sender) ? .on : .off
+            }
+        }
+        savePreferences()
+    }
+
+    @objc private func toggleTreeLantern(_ sender: NSMenuItem) {
+        config.treeLantern.toggle()
+        sender.state = config.treeLantern ? .on : .off
+        savePreferences()
+    }
+
+    @objc private func toggleLiveWeather(_ sender: NSMenuItem) {
+        liveWeatherEnabled.toggle()
+        sender.state = liveWeatherEnabled ? .on : .off
+        if liveWeatherEnabled {
+            weatherMonitor.start()
+        } else {
+            weatherMonitor.stop()
+            weatherMenuItem.title = "Weather: Manual"
+            config.cloudDensity = 0.90
+        }
+        savePreferences()
+    }
+
+    @objc private func toggleAutoLowPower(_ sender: NSMenuItem) {
+        wallpaper.autoLowPowerOnBattery.toggle()
+        sender.state = wallpaper.autoLowPowerOnBattery ? .on : .off
         savePreferences()
     }
 
