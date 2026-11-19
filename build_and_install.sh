@@ -54,7 +54,7 @@ mkdir -p "$INSTALL_DIR"
 rm -rf "$INSTALL_DIR/$BUNDLE_NAME"
 cp -R "$BUNDLE_DIR" "$INSTALL_DIR/$BUNDLE_NAME"
 
-# Reiniciar el proceso de screensaver para que tome la nueva versión
-killall legacyScreenSaver 2>/dev/null || true
+# Reiniciar los procesos de screensaver y extensión de Wallpaper para recargar binario, opciones y miniatura
+killall legacyScreenSaver WallpaperLegacyExtension 2>/dev/null || true
 
 echo "✅ ¡Listo! Instalado en: $INSTALL_DIR/$BUNDLE_NAME"

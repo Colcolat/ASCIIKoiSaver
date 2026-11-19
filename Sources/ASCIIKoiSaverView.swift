@@ -8,7 +8,7 @@ final class ASCIIKoiSaverView: ScreenSaverView {
 
     private let engine = PondEngine()
     private var lastTimestamp: CFTimeInterval = 0
-    private var configWindow: NSWindow?
+    private var configPanel: NSPanel?
 
     // Options sheet controls
     private var timePopup: NSPopUpButton?
@@ -89,21 +89,24 @@ final class ASCIIKoiSaverView: ScreenSaverView {
     override var hasConfigureSheet: Bool { true }
 
     override var configureSheet: NSWindow? {
-        if let existing = configWindow {
+        if let existing = configPanel {
             syncControlsFromDefaults()
             return existing
         }
 
-        let win = NSWindow(
+        let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 390, height: 280),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        win.title = "ASCII Koi Pond Options"
+        panel.title = "ASCII Koi Pond Options"
+        panel.isReleasedWhenClosed = false
+        panel.isRestorable = false
+        panel.hidesOnDeactivate = false
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: 390, height: 280))
-        win.contentView = content
+        panel.contentView = content
 
         func makeLabel(_ text: String, frame: NSRect) -> NSTextField {
             let lbl = NSTextField(labelWithString: text)
@@ -163,9 +166,9 @@ final class ASCIIKoiSaverView: ScreenSaverView {
         okBtn.keyEquivalent = "\r"
         content.addSubview(okBtn)
 
-        configWindow = win
+        configPanel = panel
         syncControlsFromDefaults()
-        return win
+        return panel
     }
 
     private func syncControlsFromDefaults() {
@@ -213,11 +216,12 @@ final class ASCIIKoiSaverView: ScreenSaverView {
     }
 
     private func dismissSheet() {
-        guard let win = configWindow else { return }
-        if let parent = win.sheetParent {
-            parent.endSheet(win)
+        guard let panel = configPanel else { return }
+        if let parent = panel.sheetParent {
+            parent.endSheet(panel)
         } else {
-            win.close()
+            NSApp.endSheet(panel)
         }
+        panel.orderOut(nil)
     }
 }
