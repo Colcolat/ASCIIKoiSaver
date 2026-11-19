@@ -168,9 +168,9 @@ final class MusicMonitor {
         let normalizedBass = min(1.0, CGFloat(bassRMS / max(0.015, avgBass * 2.2)))
         currentBassLevel = currentBassLevel * 0.65 + normalizedBass * 0.35
 
-        // Detect sharp bass/kick onset (real beat hit!) with 0.24s minimum beat spacing (~250 BPM max)
-        let threshold = max(0.009, avgBass * 1.38)
-        if bassRMS > threshold && (now - lastBeatTime) > 0.24 {
+        // Detect sharp bass/kick onset (real beat hit!) with 0.34s spacing so quarter-note beats lock cleanly
+        let threshold = max(0.009, avgBass * 1.35)
+        if bassRMS > threshold && (now - lastBeatTime) > 0.34 {
             lastBeatTime = now
             let strength = min(1.0, CGFloat((bassRMS - avgBass) / max(0.01, avgBass * 1.4)))
             pendingBeatStrength = max(pendingBeatStrength, max(0.45, strength))

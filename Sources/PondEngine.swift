@@ -388,6 +388,8 @@ final class PondEngine {
     private var beatEnergy: CGFloat = 0
     private var beatSide: CGFloat = 1.0
     private var beatNod: CGFloat = 0
+    private var musicHold: CGFloat = 0
+    private var beatCounter: Int = 0
     private var musicNoteCooldown: CGFloat = 0
 
     private var time: CGFloat = 0
@@ -404,10 +406,33 @@ final class PondEngine {
         isMusicPlaying = playing
         audioBass = bass
         if config.musicReactive && beatHit > 0.1 {
-            beatSide = -beatSide // Alternate left/right head-nod on every real beat hit!
+            beatSide = -beatSide // Flip Left <-> Right on EVERY beat (e.g. 107 turns/min at 107 BPM!)
+            beatCounter += 1
             beatEnergy = max(beatEnergy, min(1.0, beatHit))
+            musicHold = 1.0
+
+            // Big expanding bass ripples radiating outward from the lotus pads (nenúfares)!
+            if !config.minimalistMode && !lotusPads.isEmpty {
+                for (idx, lp) in lotusPads.enumerated() {
+                    if beatHit > 0.62 || (idx % 2 == beatCounter % 2) {
+                        let ox = sin(time * 0.55 + lp.phase) * 2.5
+                        let oy = cos(time * 0.45 + lp.phase) * 2.0
+                        ripples.append(Ripple(
+                            x: lp.x + ox,
+                            y: lp.y + oy,
+                            r: lp.r * 0.88,
+                            maxR: lp.r + 74 + beatHit * 56,
+                            alpha: min(0.95, 0.62 + beatHit * 0.34)
+                        ))
+                    }
+                }
+            }
+
+            // Subtle musical note & Koi ripple (especially in Minimalist mode)
             if let f = fishes.first(where: { !$0.leaving }), let head = f.renderNodes.first {
-                ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: (42 + beatHit * 36) * f.scale, alpha: 0.45 + beatHit * 0.35))
+                if config.minimalistMode {
+                    ripples.append(Ripple(x: head.x, y: head.y, r: 6, maxR: (54 + beatHit * 44) * f.scale, alpha: 0.58 + beatHit * 0.32))
+                }
                 if beatHit > 0.65 && musicNoteCooldown <= 0 {
                     trashCrumbs.append(TrashCrumb(
                         x: head.x + CGFloat.random(in: -14...14),
@@ -1014,14 +1039,16 @@ final class PondEngine {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
 
-        // Smoothly decay real-time beat energy & interpolate musical head-nod
+        // Smoothly swing head Left <-> Right on each real beat and hold until next beat (or silence)
         musicNoteCooldown = max(0, musicNoteCooldown - dt)
         if config.musicReactive {
-            beatEnergy *= exp(-5.0 * dt)
-            let targetNod = beatSide * beatEnergy
-            beatNod += (targetNod - beatNod) * min(1.0, dt * 15.0)
+            beatEnergy *= exp(-4.8 * dt)
+            musicHold = max(0, musicHold - dt * 0.65)
+            let targetNod = beatSide * min(1.0, musicHold * 1.4)
+            beatNod += (targetNod - beatNod) * min(1.0, dt * 16.0)
         } else {
             beatEnergy = 0
+            musicHold = 0
             beatNod *= exp(-8.0 * dt)
         }
 
@@ -1323,9 +1350,10 @@ final class PondEngine {
             let nx = -ty, ny = tx
             let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
             var sway = sin(fish.phase - t * 6.5) * amp
-            if config.musicReactive && abs(beatNod) > 0.01 {
-                // Smooth, musical head & shoulder nod synced 1:1 to real bass/kick hits!
-                sway += beatNod * (12.0 * (1.0 - t * 0.65) * fish.scale)
+            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.42 {
+                // Deliberate head turn pivoting around the shoulders (Left on beat 1 -> Right on beat 2 -> ...)
+                let headFactor = pow(1.0 - (t / 0.42), 1.35)
+                sway += beatNod * (16.5 * headFactor * fish.scale)
             }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
         }
