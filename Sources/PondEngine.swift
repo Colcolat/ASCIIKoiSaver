@@ -1349,10 +1349,10 @@ final class PondEngine {
             let nx = -ty, ny = tx
             let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
             var sway = sin(fish.phase - t * 6.5) * amp
-            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.30 {
-                // Clean head-only turn (snout to gills) on each beat, keeping the body calm
-                let headFactor = pow(1.0 - (t / 0.30), 1.4)
-                sway += beatNod * (18.5 * headFactor * fish.scale)
+            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.28 {
+                // Clean head-only turn (snout to gills) locked 1-to-1 with real beats
+                let headFactor = pow(1.0 - (t / 0.28), 1.35)
+                sway += beatNod * (16.0 * headFactor * fish.scale)
             }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
         }

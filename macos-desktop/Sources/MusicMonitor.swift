@@ -15,8 +15,10 @@ final class MusicMonitor {
 
     // Real-time DSP state (accessed under NSLock)
     private let lock = NSLock()
-    private var lpState: Float = 0
-    private var avgBass: Float = 0.015
+    private var lp1State: Float = 0
+    private var lp2State: Float = 0
+    private var fastBass: Float = 0
+    private var avgBass: Float = 0.02
     private var lastBeatTime: CFAbsoluteTime = 0
     private var lastSoundTime: CFAbsoluteTime = 0
 
@@ -142,8 +144,9 @@ final class MusicMonitor {
         var sumSqBass: Float = 0
         var sumSqTotal: Float = 0
         var sampleCount: Int = 0
-        var lp = lpState
-        let alpha: Float = 0.042 // ~280 Hz low-pass at 48kHz to isolate kick drum & bassline
+        var lp1 = lp1State
+        var lp2 = lp2State
+        let alpha: Float = 0.022 // 2-pole ~165 Hz low-pass at 48kHz to isolate real kick/bass punches
 
         for buf in abl {
             guard let mData = buf.mData, buf.mDataByteSize > 0 else { continue }
@@ -153,36 +156,46 @@ final class MusicMonitor {
             var i = 0
             while i < count {
                 let s = samples[i]
-                lp += alpha * (s - lp)
-                sumSqBass += lp * lp
+                lp1 += alpha * (s - lp1)
+                lp2 += alpha * (lp1 - lp2)
+                sumSqBass += lp2 * lp2
                 sumSqTotal += s * s
                 sampleCount += 1
                 i += stride
             }
         }
-        lpState = lp
+        lp1State = lp1
+        lp2State = lp2
         guard sampleCount > 0 else { return }
 
         let bassRMS = sqrt(sumSqBass / Float(sampleCount))
         let totalRMS = sqrt(sumSqTotal / Float(sampleCount))
         let now = CFAbsoluteTimeGetCurrent()
+        let blockDt = max(0.002, min(0.05, Float(sampleCount) / 48000.0))
 
         lock.lock()
-        if totalRMS > 0.0025 {
+        if totalRMS > 0.003 {
             lastSoundTime = now
         }
 
-        // Smooth adaptive baseline so it works equally well at low or high volume!
-        avgBass = avgBass * 0.93 + bassRMS * 0.07
-        let normalizedBass = min(1.0, CGFloat(bassRMS / max(0.015, avgBass * 2.2)))
+        // True time-based moving averages (independent of 256-frame callback rate!)
+        let avgRate = min(0.12, blockDt / 1.2)      // ~1.2s baseline so quiet bass doesn't fool it
+        avgBass = avgBass * (1.0 - avgRate) + bassRMS * avgRate
+
+        let prevFast = fastBass
+        let fastRate = min(0.65, blockDt / 0.020)   // ~20ms fast attack envelope
+        fastBass = fastBass * (1.0 - fastRate) + bassRMS * fastRate
+
+        let normalizedBass = min(1.0, CGFloat(fastBass / max(0.02, avgBass * 2.4)))
         currentBassLevel = currentBassLevel * 0.65 + normalizedBass * 0.35
 
-        // Detect sharp bass/kick onset on the leading attack transient with 0.28s spacing
-        let threshold = max(0.0075, avgBass * 1.26)
-        if bassRMS > threshold && (now - lastBeatTime) > 0.28 {
+        // Trigger ONLY on strong, rising kick/bass punches (1.55x over 1.2s avg) with 0.42s beat spacing
+        let threshold = max(0.020, avgBass * 1.55)
+        let isRisingAttack = fastBass > prevFast * 1.05
+        if fastBass > threshold && isRisingAttack && (now - lastBeatTime) > 0.42 {
             lastBeatTime = now
-            let strength = min(1.0, CGFloat((bassRMS - avgBass) / max(0.01, avgBass * 1.4)))
-            pendingBeatStrength = max(pendingBeatStrength, max(0.45, strength))
+            let strength = min(1.0, CGFloat((fastBass - avgBass) / max(0.015, avgBass * 1.6)))
+            pendingBeatStrength = max(pendingBeatStrength, max(0.50, strength))
         }
         lock.unlock()
     }
