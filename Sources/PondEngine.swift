@@ -1310,7 +1310,6 @@ final class PondEngine {
         fish.turnVel = deltaAngle / dt
 
         let turnEffort = min(1.0, abs(diff) * 0.9)
-        let musicPulse: CGFloat = config.musicReactive ? (1.0 + beatEnergy * 0.24) : 1.0
         let stateSpeedMult: CGFloat = {
             if fish.isTrashEater && fish.trashTarget != nil { return 1.45 }
             if fish.isSubagent, let parent = parentInfo {
@@ -1324,10 +1323,10 @@ final class PondEngine {
             default: return 1.0
             }
         }()
-        let surge: CGFloat = (fish.breaching ? 1.38 : stateSpeedMult) * musicPulse
+        let surge: CGFloat = fish.breaching ? 1.38 : stateSpeedMult
         let targetSpeed = fish.baseSpeed * surge * (1.0 + turnEffort * 0.22)
         fish.speed += (targetSpeed - fish.speed) * min(1.0, dt * 3.2)
-        fish.phase += dt * (4.5 * musicPulse + turnEffort * 2.0 + (fish.breaching ? 2.5 : 0))
+        fish.phase += dt * (4.5 + turnEffort * 2.0 + (fish.breaching ? 2.5 : 0))
 
         fish.nodes[0].x += cos(fish.angle) * fish.speed * dt
         fish.nodes[0].y += sin(fish.angle) * fish.speed * dt
@@ -1350,10 +1349,10 @@ final class PondEngine {
             let nx = -ty, ny = tx
             let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
             var sway = sin(fish.phase - t * 6.5) * amp
-            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.46 {
-                // Strong, snappy head turn pivoting around the shoulders (Left on beat 1 -> Right on beat 2 -> ...)
-                let headFactor = pow(1.0 - (t / 0.46), 1.25)
-                sway += beatNod * (28.5 * headFactor * fish.scale)
+            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.30 {
+                // Clean head-only turn (snout to gills) on each beat, keeping the body calm
+                let headFactor = pow(1.0 - (t / 0.30), 1.4)
+                sway += beatNod * (18.5 * headFactor * fish.scale)
             }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
         }
