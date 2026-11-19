@@ -105,7 +105,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         config.timeMode = d.string(forKey: "timeMode") ?? "auto"
         config.season = d.string(forKey: "season") ?? "auto"
         let kc = d.integer(forKey: "koiCount")
-        config.koiCount = kc > 0 ? max(2, min(5, kc)) : 3
+        config.koiCount = kc > 0 ? max(2, min(8, kc)) : 5
         config.showClock = d.object(forKey: "showClock") == nil ? true : d.bool(forKey: "showClock")
         config.rainOn = d.bool(forKey: "rainOn")
         config.monoMode = d.bool(forKey: "monoMode")
@@ -211,7 +211,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
 
         // Koi Count Submenu
         let koiSub = NSMenu()
-        for n in 2...5 {
+        for n in 2...8 {
             let item = NSMenuItem(title: "\(n) Ambient Koi", action: #selector(selectKoiCount(_:)), keyEquivalent: "")
             item.tag = n
             item.state = (config.koiCount == n) ? .on : .off

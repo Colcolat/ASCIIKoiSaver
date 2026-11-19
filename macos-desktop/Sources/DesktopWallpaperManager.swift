@@ -227,7 +227,8 @@ final class DesktopWallpaperManager {
         if shouldRun {
             if renderTimer == nil {
                 lastTimestamp = CACurrentMediaTime()
-                renderTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                // 60 FPS for low-latency visual beat sync (still pauses to 0% CPU when fullscreen!)
+                renderTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
                     self?.tick()
                 }
             }

@@ -23,7 +23,7 @@ struct AgentDescriptor: Equatable {
 struct SaverConfig {
     var timeMode: String = "auto"   // auto | day | sunset | night
     var season: String = "auto"     // auto (weekday) | spring | summer | autumn | winter
-    var koiCount: Int = 3
+    var koiCount: Int = 5
     var showClock: Bool = true
     var rainOn: Bool = false
     var monoMode: Bool = false
@@ -881,7 +881,7 @@ final class PondEngine {
             // Agents finished — bring ambient pond Koi back in smoothly from the edges!
             // Count ALL ambient Koi (including ones currently leaving) so cycling Koi never exceed koiCount
             let ambientCount = fishes.filter { $0.agentId == nil && !$0.isTrashEater }.count
-            let targetAmbient = max(1, min(5, config.koiCount))
+            let targetAmbient = max(1, min(8, config.koiCount))
             if ambientCount < targetAmbient {
                 for _ in 0..<(targetAmbient - ambientCount) {
                     fishes.append(spawnKoiFromEdge())
@@ -996,13 +996,16 @@ final class PondEngine {
 
     private func initEcosystem() {
         let s = screenScale()
-        let count = max(1, min(5, config.koiCount))
+        let count = max(1, min(8, config.koiCount))
         let presets: [(KoiVariety, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
             (.showa, 0.36, 0.48, -0.12, 1.84, 0.90, 52),
             (.utsuri, 0.66, 0.30, .pi * 0.85, 1.56, 0.54, 58),
             (.ogon, 0.52, 0.74, -.pi * 0.72, 1.38, 0.24, 46),
             (.sanke, 0.22, 0.26, 0.4, 1.50, 0.72, 50),
-            (.kumonryu, 0.78, 0.66, -2.4, 1.44, 0.38, 54)
+            (.kumonryu, 0.78, 0.66, -2.4, 1.44, 0.38, 54),
+            (.showa, 0.16, 0.68, -0.45, 1.32, 0.62, 55),
+            (.ogon, 0.84, 0.24, 2.55, 1.42, 0.44, 49),
+            (.sanke, 0.48, 0.20, 1.15, 1.36, 0.80, 53)
         ]
         fishes = (0..<count).map { i in
             let p = presets[i % presets.count]
@@ -1072,7 +1075,9 @@ final class PondEngine {
         if config.musicReactive && isMusicPlaying && (time - lastRealBeatTime) < 2.8 {
             beatEnergy *= exp(-4.8 * dt)
             rhythmTimer += dt
-            if rhythmTimer >= estimatedBeatInterval {
+            // Slight 22ms predictive lead compensates for CoreAudio + display pipeline latency
+            let nextBeatAt = max(0.32, estimatedBeatInterval - 0.022)
+            if rhythmTimer >= nextBeatAt {
                 rhythmTimer -= estimatedBeatInterval
                 beatSide = -beatSide
                 lastRhythmFlipTime = time
@@ -1080,7 +1085,7 @@ final class PondEngine {
             }
             musicHold = max(0, musicHold - dt * 0.45)
             let targetNod = beatSide * min(1.0, musicHold * 1.35)
-            beatNod += (targetNod - beatNod) * min(1.0, dt * 28.0)
+            beatNod += (targetNod - beatNod) * min(1.0, dt * 48.0)
         } else {
             beatEnergy = 0
             musicHold = 0

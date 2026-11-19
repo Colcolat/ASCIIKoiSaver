@@ -108,8 +108,8 @@ final class MusicMonitor {
         }
         aggregateDeviceID = createdAgg
 
-        // Request low-latency 256-frame audio buffer (~5ms at 48kHz)
-        var bufferFrames: UInt32 = 256
+        // Request ultra-low-latency 128-frame audio buffer (~2.6ms at 48kHz)
+        var bufferFrames: UInt32 = 128
         var bufAddr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyBufferFrameSize,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -145,8 +145,7 @@ final class MusicMonitor {
         var sumSqTotal: Float = 0
         var sampleCount: Int = 0
         var lp1 = lp1State
-        var lp2 = lp2State
-        let alpha: Float = 0.022 // 2-pole ~165 Hz low-pass at 48kHz to isolate real kick/bass punches
+        let alpha: Float = 0.022 // 1-pole ~165 Hz low-pass at 48kHz (half the phase lag of 2-pole)
 
         for buf in abl {
             guard let mData = buf.mData, buf.mDataByteSize > 0 else { continue }
@@ -157,15 +156,13 @@ final class MusicMonitor {
             while i < count {
                 let s = samples[i]
                 lp1 += alpha * (s - lp1)
-                lp2 += alpha * (lp1 - lp2)
-                sumSqBass += lp2 * lp2
+                sumSqBass += lp1 * lp1
                 sumSqTotal += s * s
                 sampleCount += 1
                 i += stride
             }
         }
         lp1State = lp1
-        lp2State = lp2
         guard sampleCount > 0 else { return }
 
         let bassRMS = sqrt(sumSqBass / Float(sampleCount))
@@ -178,23 +175,23 @@ final class MusicMonitor {
             lastSoundTime = now
         }
 
-        // True time-based moving averages (independent of 256-frame callback rate!)
-        let avgRate = min(0.12, blockDt / 1.2)      // ~1.2s baseline so quiet bass doesn't fool it
+        // True time-based moving average (~1.2s baseline so quiet bass doesn't fool it)
+        let avgRate = min(0.12, blockDt / 1.2)
         avgBass = avgBass * (1.0 - avgRate) + bassRMS * avgRate
 
-        let prevFast = fastBass
-        let fastRate = min(0.65, blockDt / 0.020)   // ~20ms fast attack envelope
-        fastBass = fastBass * (1.0 - fastRate) + bassRMS * fastRate
+        // Zero-lag transient check directly on the 2.6ms block RMS vs previous block
+        let prevBass = fastBass
+        fastBass = bassRMS
 
-        let normalizedBass = min(1.0, CGFloat(fastBass / max(0.02, avgBass * 2.4)))
+        let normalizedBass = min(1.0, CGFloat(bassRMS / max(0.02, avgBass * 2.4)))
         currentBassLevel = currentBassLevel * 0.65 + normalizedBass * 0.35
 
-        // Trigger ONLY on strong, rising kick/bass punches (1.55x over 1.2s avg) with 0.42s beat spacing
-        let threshold = max(0.020, avgBass * 1.55)
-        let isRisingAttack = fastBass > prevFast * 1.05
-        if fastBass > threshold && isRisingAttack && (now - lastBeatTime) > 0.42 {
+        // Fire immediately on the very first 2.6ms rising attack block of a strong kick/bass hit
+        let threshold = max(0.022, avgBass * 1.55)
+        let isRisingAttack = bassRMS > prevBass * 1.06
+        if bassRMS > threshold && isRisingAttack && (now - lastBeatTime) > 0.40 {
             lastBeatTime = now
-            let strength = min(1.0, CGFloat((fastBass - avgBass) / max(0.015, avgBass * 1.6)))
+            let strength = min(1.0, CGFloat((bassRMS - avgBass) / max(0.015, avgBass * 1.6)))
             pendingBeatStrength = max(pendingBeatStrength, max(0.50, strength))
         }
         lock.unlock()
