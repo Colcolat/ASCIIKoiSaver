@@ -165,13 +165,8 @@ internal sealed class PondCanvasForm : Form
     public void AttachToDesktop()
     {
         if (_mode != PondMode.LiveWallpaper) return;
-        IntPtr workerW = Win32.GetDesktopWorkerW();
-        if (workerW != IntPtr.Zero)
-        {
-            Win32.SetParent(Handle, workerW);
-            var vs = SystemInformation.VirtualScreen;
-            Win32.MoveWindow(Handle, 0, 0, vs.Width, vs.Height, true);
-        }
+        var vs = SystemInformation.VirtualScreen;
+        Win32.AttachToDesktop(Handle, vs.Width, vs.Height);
     }
 
     public void ReloadConfig(PondConfig cfg)

@@ -6,7 +6,15 @@ internal static class Win32
 {
     public const uint SMTO_NORMAL = 0x0000;
     public const int GWL_STYLE = -16;
+    public const int GWL_EXSTYLE = -20;
     public const int WS_CHILD = 0x40000000;
+    public const int WS_EX_LAYERED = 0x00080000;
+    public const int WS_EX_TOOLWINDOW = 0x00000080;
+    public const uint LWA_ALPHA = 0x00000002;
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_SHOWWINDOW = 0x0040;
     public const int TRANSPARENT = 1;
     public const uint SRCCOPY = 0x00CC0020;
     public const uint SPI_SETDESKWALLPAPER = 0x0014;
@@ -40,6 +48,12 @@ internal static class Win32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
     public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
@@ -101,34 +115,63 @@ internal static class Win32
         IntPtr hdcSrc, int nXSrc, int nYSrc, uint dwRop);
 
     /// <summary>
-    /// Locates the desktop WorkerW window behind desktop icons (works on Windows 10 & Windows 11).
+    /// Attaches a live wallpaper window directly behind the desktop icons.
+    /// Supports both Windows 11 24H2+ ("Raised Desktop" under Progman) and Windows 10 / 11 23H2 (top-level WorkerW).
     /// </summary>
-    public static IntPtr GetDesktopWorkerW()
+    public static bool AttachToDesktop(IntPtr hwnd, int width, int height)
     {
         IntPtr progman = FindWindow("Progman", null);
-        if (progman == IntPtr.Zero) return IntPtr.Zero;
+        if (progman == IntPtr.Zero) return false;
 
-        // Spawn WorkerW behind SHELLDLL_DefView
+        // Trigger Windows desktop composition to spawn WorkerW
         SendMessageTimeout(progman, 0x052C, new IntPtr(0xD), new IntPtr(0x1), SMTO_NORMAL, 1000, out _);
+        SendMessageTimeout(progman, 0x052C, IntPtr.Zero, IntPtr.Zero, SMTO_NORMAL, 1000, out _);
 
-        IntPtr workerW = IntPtr.Zero;
+        // Check if this is Windows 11 24H2+ where SHELLDLL_DefView and WorkerW are both direct children of Progman
+        IntPtr shellViewUnderProgman = FindWindowEx(progman, IntPtr.Zero, "SHELLDLL_DefView", null);
+        IntPtr workerUnderProgman = FindWindowEx(progman, IntPtr.Zero, "WorkerW", null);
+
+        if (shellViewUnderProgman != IntPtr.Zero)
+        {
+            // Windows 11 24H2+ Raised Desktop recipe:
+            // 1. Mark window WS_EX_LAYERED + opaque alpha 255 + WS_CHILD
+            int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+            SetWindowLong(hwnd, GWL_EXSTYLE, exStyle | WS_EX_LAYERED | WS_EX_TOOLWINDOW);
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+            int style = GetWindowLong(hwnd, GWL_STYLE);
+            SetWindowLong(hwnd, GWL_STYLE, style | WS_CHILD);
+
+            // 2. Parent directly under Progman
+            SetParent(hwnd, progman);
+
+            // 3. Sandwich between SHELLDLL_DefView (icons on top) and WorkerW (static wallpaper below)
+            SetWindowPos(hwnd, shellViewUnderProgman, 0, 0, width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            if (workerUnderProgman != IntPtr.Zero)
+            {
+                SetWindowPos(workerUnderProgman, hwnd, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            return true;
+        }
+
+        // Legacy Windows 10 / Windows 11 23H2 path: top-level WorkerW sibling behind SHELLDLL_DefView
+        IntPtr legacyWorkerW = IntPtr.Zero;
         EnumWindows((topHandle, _) =>
         {
             IntPtr defView = FindWindowEx(topHandle, IntPtr.Zero, "SHELLDLL_DefView", null);
             if (defView != IntPtr.Zero)
             {
-                workerW = FindWindowEx(IntPtr.Zero, topHandle, "WorkerW", null);
+                legacyWorkerW = FindWindowEx(IntPtr.Zero, topHandle, "WorkerW", null);
             }
             return true;
         }, IntPtr.Zero);
 
-        // Windows 11 24H2+ fallback: WorkerW may be a child of Progman
-        if (workerW == IntPtr.Zero)
-        {
-            workerW = FindWindowEx(progman, IntPtr.Zero, "WorkerW", null);
-        }
-
-        return workerW != IntPtr.Zero ? workerW : progman;
+        IntPtr parent = legacyWorkerW != IntPtr.Zero ? legacyWorkerW : progman;
+        int st = GetWindowLong(hwnd, GWL_STYLE);
+        SetWindowLong(hwnd, GWL_STYLE, st | WS_CHILD);
+        SetParent(hwnd, parent);
+        MoveWindow(hwnd, 0, 0, width, height, true);
+        return true;
     }
 
     public static void RefreshDesktopWallpaper()
