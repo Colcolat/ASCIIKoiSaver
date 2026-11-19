@@ -138,7 +138,6 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         config.minimalistMode = d.bool(forKey: "minimalistMode")
         config.musicReactive = d.object(forKey: "musicReactive") == nil ? true : d.bool(forKey: "musicReactive")
         config.treeBranch = d.string(forKey: "treeBranch") ?? "bottomRight"
-        config.treeLantern = d.object(forKey: "treeLantern") == nil ? true : d.bool(forKey: "treeLantern")
         liveWeatherEnabled = d.object(forKey: "liveWeather") == nil ? true : d.bool(forKey: "liveWeather")
         wallpaper.autoLowPowerOnBattery = d.object(forKey: "autoLowPower") == nil ? true : d.bool(forKey: "autoLowPower")
         wallpaper.desktopClicksEnabled = d.object(forKey: "desktopClicks") == nil ? true : d.bool(forKey: "desktopClicks")
@@ -155,7 +154,6 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         d.set(config.minimalistMode, forKey: "minimalistMode")
         d.set(config.musicReactive, forKey: "musicReactive")
         d.set(config.treeBranch, forKey: "treeBranch")
-        d.set(config.treeLantern, forKey: "treeLantern")
         d.set(liveWeatherEnabled, forKey: "liveWeather")
         d.set(wallpaper.autoLowPowerOnBattery, forKey: "autoLowPower")
         d.set(wallpaper.desktopClicksEnabled, forKey: "desktopClicks")
@@ -275,12 +273,6 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
             item.target = self
             branchSub.addItem(item)
         }
-        branchSub.addItem(.separator())
-        let lanternItem = NSMenuItem(title: "Hanging Tree Lantern (Warm Glow)", action: #selector(toggleTreeLantern(_:)), keyEquivalent: "")
-        lanternItem.state = config.treeLantern ? .on : .off
-        lanternItem.target = self
-        branchSub.addItem(lanternItem)
-
         let branchItem = NSMenuItem(title: "Tree Branch", action: nil, keyEquivalent: "")
         branchItem.submenu = branchSub
         menu.addItem(branchItem)
@@ -386,12 +378,6 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
                 $0.state = ($0 == sender) ? .on : .off
             }
         }
-        savePreferences()
-    }
-
-    @objc private func toggleTreeLantern(_ sender: NSMenuItem) {
-        config.treeLantern.toggle()
-        sender.state = config.treeLantern ? .on : .off
         savePreferences()
     }
 

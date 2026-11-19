@@ -30,7 +30,6 @@ struct SaverConfig {
     var minimalistMode: Bool = false
     var musicReactive: Bool = true
     var treeBranch: String = "bottomRight" // none | topRight | topLeft | bottomRight | bottomLeft
-    var treeLantern: Bool = true           // Hanging warm glowing Chochin lantern on the tree branch
     var cloudDensity: CGFloat = 0.90       // 0.30 (clear) .. 1.45 (overcast), driven by Live Weather
     var isPreview: Bool = false
 }
@@ -443,7 +442,6 @@ final class PondEngine {
     private var branchCells: [BranchCell] = []
     private var branchShadowCells: [(col: Int, row: Int, ch: Character, swayWeight: CGFloat)] = []
     private var branchTipPoints: [CGPoint] = []
-    private var branchLanternAnchor: CGPoint? = nil
     private var branchCacheKey: String = ""
 
     // Visible falling raindrops (lightweight: max ~18 drops -> ~0.02ms/frame!)
@@ -2394,7 +2392,6 @@ final class PondEngine {
         branchCells.removeAll(keepingCapacity: true)
         branchShadowCells.removeAll(keepingCapacity: true)
         branchTipPoints.removeAll(keepingCapacity: true)
-        branchLanternAnchor = nil
 
         guard config.treeBranch != "none", cols > 20, rows > 12 else { return }
 
@@ -2423,12 +2420,12 @@ final class PondEngine {
             let idx = r * cols + c
             if let existing = cellMap[idx], existing.kind > kind { return }
             cellMap[idx] = BranchCell(col: c, row: r, ch: ch, kind: kind, colorIdx: colorIdx, swayWeight: sway)
-            // Soft cast shadow down-right on the pond surface below
-            let sc = c + 5, sr = r + 3
+            // High-altitude top-down cast shadow: larger parallax offset (+7 cols, +4 rows) creates instant aerial depth!
+            let sc = c + 7, sr = r + 4
             if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
                 let sIdx = sr * cols + sc
                 if shadowSet.insert(sIdx).inserted {
-                    branchShadowCells.append((col: sc, row: sr, ch: kind >= 2 ? "·" : ":", swayWeight: sway))
+                    branchShadowCells.append((col: sc, row: sr, ch: kind >= 3 ? "·" : ":", swayWeight: sway))
                 }
             }
         }
@@ -2481,31 +2478,59 @@ final class PondEngine {
             }
         }
 
-        // Helper: layered organic foliage / blossom puff (dark inner core -> mid leaves -> sunlit outer petals)
+        // Helper: true TOP-DOWN botanical leaf/blossom canopy (radiating rosettes + 3D crown height shading!)
+        // kind: 2 = deep lower shaded foliage, 3 = mid canopy leaves, 4 = sunlit upper crown tips/blossoms
         func addFoliageCluster(center: CGPoint, radius: CGFloat, sway: CGFloat, seed: Int) {
             branchTipPoints.append(center)
             let isWinter = actSeason == "winter"
-            let count = isWinter ? 14 : 34
-            for k in 0..<count {
-                let h1 = hash2(CGFloat(seed * 37 + k), 7.3)
-                let h2 = hash2(CGFloat(seed * 19 + k), 19.1)
-                let h3 = hash2(CGFloat(seed * 13 + k), 41.7)
+
+            // 1. Deep shaded under-canopy base (gives 3D volume when viewed from straight above)
+            let baseCount = isWinter ? 6 : 16
+            for k in 0..<baseCount {
+                let h1 = hash2(CGFloat(seed * 41 + k), 5.1)
+                let h2 = hash2(CGFloat(seed * 23 + k), 13.7)
                 let ang = h1 * 2.0 * .pi
-                // Elliptical layered puff shape for realistic canopy depth
-                let dist = pow(h2, 0.58) * radius
-                let px = center.x + cos(ang) * dist * 1.15
-                let py = center.y + sin(ang) * dist * 0.82
-                let isOuterTop = (sin(ang) < 0.15 && dist > radius * 0.35) || h3 > 0.68
-                let ch: Character
-                if isWinter {
-                    ch = isOuterTop ? "*" : (h3 > 0.35 ? "+" : "·")
-                } else if actSeason == "spring" {
-                    ch = isOuterTop ? (h3 > 0.72 ? "@" : "*") : (h3 > 0.38 ? "+" : (h3 > 0.15 ? "%" : "·"))
-                } else {
-                    ch = isOuterTop ? (h3 > 0.70 ? "*" : "#") : (h3 > 0.35 ? "%" : "+")
+                let dist = sqrt(h2) * radius * 0.96
+                let px = center.x + cos(ang) * dist + 2.5
+                let py = center.y + sin(ang) * dist + 2.0
+                let ch: Character = isWinter ? "·" : (h1 > 0.5 ? "%" : "#")
+                putCell(px: px, py: py, ch: ch, kind: 2, colorIdx: k % 3, sway: sway)
+            }
+
+            // 2. Radiating top-down leaf fans / 5-petal sakura rosettes
+            let rosetteCount = isWinter ? 3 : 5
+            for rIdx in 0..<rosetteCount {
+                let rh1 = hash2(CGFloat(seed * 29 + rIdx), 11.3)
+                let rh2 = hash2(CGFloat(seed * 17 + rIdx), 27.9)
+                let rAng = rh1 * 2.0 * .pi
+                let rDist = (rIdx == 0 ? 0.0 : (0.35 + rh2 * 0.45)) * radius
+                let rx = center.x + cos(rAng) * rDist
+                let ry = center.y + sin(rAng) * rDist
+                let petals = actSeason == "spring" ? 5 : 6
+                let leafLen = radius * (0.36 + rh2 * 0.22)
+                let baseRot = rh1 * .pi
+
+                for p in 0..<petals {
+                    let pAng = baseRot + CGFloat(p) * (2.0 * .pi / CGFloat(petals))
+                    let steps = isWinter ? 2 : 3
+                    for st in 1...steps {
+                        let frac = CGFloat(st) / CGFloat(steps)
+                        let px = rx + cos(pAng) * leafLen * frac
+                        let py = ry + sin(pAng) * leafLen * frac
+                        // Top-left side catches overhead sun -> brightest crown highlight (kind 4)
+                        let sunlit = (cos(pAng) < 0.25 && sin(pAng) < 0.35) || (rIdx == 0 && st <= 2)
+                        let kind: UInt8 = sunlit ? 4 : 3
+                        let ch: Character
+                        if isWinter {
+                            ch = sunlit ? "*" : "+"
+                        } else if actSeason == "spring" {
+                            ch = sunlit ? (st == 1 ? "@" : "*") : (st == steps ? "·" : "+")
+                        } else {
+                            ch = sunlit ? (st == 1 ? "*" : "#") : (st == steps ? "+" : "%")
+                        }
+                        putCell(px: px, py: py, ch: ch, kind: kind, colorIdx: (rIdx + p) % 3, sway: sway)
+                    }
                 }
-                let colorIdx = Int(h3 * 3.0) % 3
-                putCell(px: px, py: py, ch: ch, kind: isOuterTop ? 3 : 2, colorIdx: colorIdx, sway: sway)
             }
         }
 
@@ -2534,9 +2559,6 @@ final class PondEngine {
         for (idx, cl) in clusters.enumerated() {
             addFoliageCluster(center: toWorld(cl.0, cl.1), radius: cl.2 * s, sway: cl.3, seed: idx + 1)
         }
-
-        // Pin the hanging lantern anchor nicely under the mid-outer sweeping bough
-        branchLanternAnchor = toWorld(0.62, 0.36)
 
         branchCells = Array(cellMap.values)
     }
@@ -3190,81 +3212,24 @@ final class PondEngine {
                     drawGlyph(ctx, sh.ch, col: sc, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.82)
                 }
             }
-            // 2. Branch wood & seasonal blossoms/foliage
+            // 2. Branch wood & 3-tier top-down foliage/blossom canopy
             for bc in branchCells {
                 let cc = bc.col + Int(round(breeze * bc.swayWeight))
                 guard cc >= 0 && cc < cols else { continue }
                 switch bc.kind {
-                case 0:
+                case 0: // Deep bark
                     drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkDark.r, g: barkDark.g, b: barkDark.b, a: 0.96)
-                case 1:
+                case 1: // Top-ridge sunlit bark
                     drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkLight.r, g: barkLight.g, b: barkLight.b, a: 0.96)
-                case 2:
+                case 2: // Lower shaded under-canopy (creates 3D top-down depth!)
                     let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.86, g: rgb.g * 0.86, b: rgb.b * 0.86, a: 0.94)
-                default:
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.56, g: rgb.g * 0.56, b: rgb.b * 0.56, a: 0.92)
+                case 3: // Mid-crown foliage
                     let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * 1.15), g: min(1, rgb.g * 1.15), b: min(1, rgb.b * 1.15), a: 0.98)
-                }
-            }
-
-            // 3. Hanging Japanese Chochin Lantern emitting warm golden light on water & foliage
-            if config.treeLantern, let anchor = branchLanternAnchor {
-                let swing = sin(time * 1.15) * 1.4
-                let flicker = 0.92 + 0.08 * sin(time * 6.8 + sin(time * 2.3))
-                let ac = Int(anchor.x / cellW) + Int(round(breeze * 0.65))
-                let ar = Int(anchor.y / cellH)
-                // Hang downward when branch is at top, or gently below-left when branch is at bottom
-                let cordLen = 3
-                let lc = ac + Int(round(swing))
-                let lr = min(rows - 5, ar + cordLen)
-
-                // Warm radial light halo & water shimmer below the lantern (~14x10 box -> ~0.03ms/frame!)
-                let glowStrength: CGFloat = (pal.tod == "night" ? 1.0 : (pal.tod == "sunset" ? 0.78 : 0.36)) * flicker
-                let glowRgb = config.monoMode ? pal.white : RGB(255, 198, 96)
-                let warmCore = config.monoMode ? pal.white : RGB(255, 240, 175)
-                let glowRadC = 9, glowRadR = 6
-                for gr in max(0, lr - glowRadR)...min(rows - 1, lr + glowRadR + 3) {
-                    let dy = CGFloat(gr - (lr + 1)) * 1.45
-                    for gc in max(0, lc - glowRadC)...min(cols - 1, lc + glowRadC) {
-                        let dx = CGFloat(gc - lc) * 0.85
-                        let d = hypot(dx, dy)
-                        if d > 2.2 && d < 8.5 {
-                            let falloff = pow(1.0 - d / 8.5, 1.65) * glowStrength
-                            if falloff > 0.08 {
-                                let shimmer = sin(CGFloat(gc) * 0.6 + time * 2.2 + CGFloat(gr) * 0.4)
-                                let gCh: Character = gr > lr + 2 ? (shimmer > 0.2 ? "~" : "·") : "·"
-                                drawGlyph(ctx, gCh, col: gc, row: gr, r: glowRgb.r, g: glowRgb.g, b: glowRgb.b, a: min(0.68, falloff * 0.62))
-                            }
-                        }
-                    }
-                }
-
-                // Hanging cord
-                for k in 0..<cordLen {
-                    let cy = ar + k
-                    let cx = ac + Int(round(swing * CGFloat(k) / CGFloat(cordLen)))
-                    if cx >= 0 && cx < cols && cy >= 0 && cy < rows {
-                        drawGlyph(ctx, "|", col: cx, row: cy, r: barkLight.r, g: barkLight.g, b: barkLight.b, a: 0.90)
-                    }
-                }
-                // Paper lantern body (cap, warm glowing core, tassel)
-                let capRgb = config.monoMode ? pal.stone : RGB(96, 54, 42)
-                let paperRgb = config.monoMode ? pal.white : RGB(255, 168, 72)
-                if lc >= 2 && lc < cols - 2 && lr >= 1 && lr < rows - 3 {
-                    drawGlyph(ctx, "=", col: lc - 1, row: lr, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.98)
-                    drawGlyph(ctx, "=", col: lc,     row: lr, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.98)
-                    drawGlyph(ctx, "=", col: lc + 1, row: lr, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.98)
-
-                    drawGlyph(ctx, "(", col: lc - 1, row: lr + 1, r: paperRgb.r, g: paperRgb.g, b: paperRgb.b, a: 0.96)
-                    drawGlyph(ctx, "@", col: lc,     row: lr + 1, r: warmCore.r * flicker, g: warmCore.g * flicker, b: warmCore.b * flicker, a: 1.0)
-                    drawGlyph(ctx, ")", col: lc + 1, row: lr + 1, r: paperRgb.r, g: paperRgb.g, b: paperRgb.b, a: 0.96)
-
-                    drawGlyph(ctx, "(", col: lc - 1, row: lr + 2, r: paperRgb.r * 0.92, g: paperRgb.g * 0.92, b: paperRgb.b * 0.92, a: 0.95)
-                    drawGlyph(ctx, "#", col: lc,     row: lr + 2, r: glowRgb.r * flicker, g: glowRgb.g * flicker, b: glowRgb.b * flicker, a: 0.98)
-                    drawGlyph(ctx, ")", col: lc + 1, row: lr + 2, r: paperRgb.r * 0.92, g: paperRgb.g * 0.92, b: paperRgb.b * 0.92, a: 0.95)
-
-                    drawGlyph(ctx, "=", col: lc, row: lr + 3, r: capRgb.r, g: capRgb.g, b: capRgb.b, a: 0.96)
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.88, g: rgb.g * 0.88, b: rgb.b * 0.88, a: 0.95)
+                default: // Upper sunlit crown tips & blossoms
+                    let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * 1.22), g: min(1, rgb.g * 1.22), b: min(1, rgb.b * 1.22), a: 0.99)
                 }
             }
         }
