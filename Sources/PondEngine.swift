@@ -2201,6 +2201,7 @@ final class PondEngine {
             batchPositions[key] = [pt]
             batchKeys.append(key)
         } else {
+            if batchGlyphs[key]!.isEmpty { batchKeys.append(key) }
             batchGlyphs[key]!.append(glyph)
             batchPositions[key]!.append(pt)
         }
