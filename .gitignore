@@ -1,4 +1,7 @@
 build/
+windows/ASCIIKoiPond/bin/
+windows/ASCIIKoiPond/obj/
+windows/dist/
 .DS_Store
 *.swp
 *~
