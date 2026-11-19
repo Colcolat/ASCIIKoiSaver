@@ -2631,7 +2631,7 @@ final class PondEngine {
         branchCells = Array(cellMap.values)
     }
 
-    /// Pre-rasterizes top-down Zen Garden Accent (Wooden Bridge or Stepping Stones) ONCE on corner/mode/resize change (~0.06ms/frame!)
+    /// Pre-rasterizes top-down Zen Garden Accent (Japanese Hinoki Wooden Bridge or Mossy River Stones) ONCE on change (~0.08ms/frame!)
     private func ensurePondAccentCache() {
         // Place in opposite bottom corner from treeBranch so it never collides with widgets or the tree!
         let onLeft = (config.treeBranch != "bottomLeft")
@@ -2646,30 +2646,96 @@ final class PondEngine {
         var cellMap: [Int: AccentCell] = [:]
         var shadowSet = Set<Int>()
 
-        func put(px: CGFloat, py: CGFloat, ch: Character, kind: UInt8, shDx: Int, shDy: Int) {
+        // kind legend:
+        // Bridge: 0=dark seam/underwood, 1=weathered plank mid, 2=sunlit plank grain, 3=warm cedar rail, 4=dark bronze post cap
+        // Stones: 5=wet dark rock base, 6=mid river granite, 7=sunlit flat top stone, 8=dark damp moss, 9=bright lush moss
+        func put(px: CGFloat, py: CGFloat, ch: Character, kind: UInt8, shDx: Int, shDy: Int, priority: UInt8? = nil) {
             let c = Int(px / cellW), r = Int(py / cellH)
             guard c >= 0 && c < cols && r >= 0 && r < rows else { return }
             let idx = r * cols + c
-            if let ex = cellMap[idx], ex.kind > kind { return }
+            let prio = priority ?? kind
+            if let ex = cellMap[idx], ex.kind > prio { return }
             cellMap[idx] = AccentCell(col: c, row: r, ch: ch, kind: kind)
-            let sc = c + shDx, sr = r + shDy
-            if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
-                if shadowSet.insert(sr * cols + sc).inserted {
-                    accentShadowCells.append((col: sc, row: sr, ch: kind >= 2 ? ":" : "·"))
+            if shDx != 0 || shDy != 0 {
+                let sc = c + shDx, sr = r + shDy
+                if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
+                    if shadowSet.insert(sr * cols + sc).inserted {
+                        accentShadowCells.append((col: sc, row: sr, ch: (kind == 3 || kind == 4 || kind >= 6) ? ":" : "·"))
+                    }
+                }
+            }
+        }
+
+        // Helper: organic top-down mossy river stone (works for both big boulders & small surrounding pebbles!)
+        func stampRiverStone(cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat, rot: CGFloat, seed: Int, mossAmt: CGFloat, isPebble: Bool) {
+            let cCos = cos(-rot), cSin = sin(-rot)
+            let minC = max(0, Int(floor((cx - rx - 8) / cellW))), maxC = min(cols - 1, Int(ceil((cx + rx + 8) / cellW)))
+            let minR = max(0, Int(floor((cy - ry - 8) / cellH))), maxR = min(rows - 1, Int(ceil((cy + ry + 8) / cellH)))
+            guard minR <= maxR && minC <= maxC else { return }
+
+            for r in minR...maxR {
+                let dy = (CGFloat(r) + 0.5) * cellH - cy
+                for c in minC...maxC {
+                    let dx = (CGFloat(c) + 0.5) * cellW - cx
+                    let lx = (dx * cCos - dy * cSin) / rx
+                    let ly = (dx * cSin + dy * cCos) / ry
+                    let ang = atan2(ly, lx)
+                    let edge = 1.0 + 0.13 * sin(ang * 3.0 + CGFloat(seed) * 2.1) + 0.07 * cos(ang * 5.0 - CGFloat(seed))
+                    let d = hypot(lx, ly) / edge
+                    if d <= 1.0 {
+                        let h = hash2(CGFloat(c + seed * 19), CGFloat(r + seed * 7))
+                        let nMoss = fbm(CGFloat(c) * 0.24 + CGFloat(seed) * 3.1, CGFloat(r) * 0.24)
+                        // Directional top-down lighting (sunlit upper-left face, damp shaded lower-right rim)
+                        let light = -lx * 0.45 - ly * 0.45 + (1.0 - d) * 0.65
+                        let px = (CGFloat(c) + 0.5) * cellW
+                        let py = (CGFloat(r) + 0.5) * cellH
+
+                        // Lush organic moss creeping across damp edges & crevices (especially on shaded/wet sides!)
+                        let mossZone = (d > 0.42 && nMoss > (0.64 - mossAmt * 0.24)) || (d > 0.68 && ly > -0.1 && nMoss > (0.52 - mossAmt * 0.20))
+                        if !isPebble && mossZone {
+                            let isBrightMoss = light > 0.12 || h > 0.62
+                            let mCh: Character = isBrightMoss ? (h > 0.55 ? "*" : "+") : (h > 0.5 ? "%" : ":")
+                            put(px: px, py: py, ch: mCh, kind: isBrightMoss ? 9 : 8, shDx: 3, shDy: 2)
+                        } else if d > 0.80 {
+                            // Wet dark granite waterline edge
+                            put(px: px, py: py, ch: isPebble ? "o" : (h > 0.5 ? "%" : ":"), kind: 5, shDx: isPebble ? 2 : 3, shDy: isPebble ? 1 : 2)
+                        } else if light > 0.36 && !isPebble {
+                            // Sunlit weathered granite top face
+                            let tCh: Character = h > 0.72 ? "#" : (h > 0.35 ? "=" : ".")
+                            put(px: px, py: py, ch: tCh, kind: 7, shDx: 3, shDy: 2)
+                        } else {
+                            // Mid-tone natural river granite
+                            let mCh: Character = isPebble ? (h > 0.45 ? "o" : ".") : (h > 0.62 ? "#" : (h > 0.25 ? "%" : "+"))
+                            put(px: px, py: py, ch: mCh, kind: 6, shDx: isPebble ? 2 : 3, shDy: isPebble ? 1 : 2)
+                        }
+                    }
                 }
             }
         }
 
         if config.pondAccent == "bridge" {
-            // Classic Japanese curved wooden footbridge seen 100% TOP-DOWN arching across the bottom corner!
-            let p0 = onLeft ? CGPoint(x: -14, y: height * 0.72) : CGPoint(x: width + 14, y: height * 0.72)
-            let p1 = onLeft ? CGPoint(x: width * 0.14, y: height * 0.84) : CGPoint(x: width * 0.86, y: height * 0.84)
-            let p2 = onLeft ? CGPoint(x: width * 0.24, y: height + 14) : CGPoint(x: width * 0.76, y: height + 14)
-            let halfW: CGFloat = 34 * s
-            let plankCount = 26
+            // Authentic Japanese curved cedar/hinoki wooden footbridge seen 100% TOP-DOWN
+            let p0 = onLeft ? CGPoint(x: -18, y: height * 0.68) : CGPoint(x: width + 18, y: height * 0.68)
+            let p1 = onLeft ? CGPoint(x: width * 0.16, y: height * 0.81) : CGPoint(x: width * 0.84, y: height * 0.81)
+            let p2 = onLeft ? CGPoint(x: width * 0.28, y: height + 18) : CGPoint(x: width * 0.72, y: height + 18)
+            let halfW: CGFloat = 40 * s
 
-            for i in 0...plankCount {
-                let t = CGFloat(i) / CGFloat(plankCount)
+            // 1. Anchor both ends of the bridge with natural mossy shoreline stones & small pebbles!
+            let shoreStones: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, Bool)] = [
+                (0.025, 0.63, 24, 18,  0.3, false), (0.055, 0.65, 11, 9, 0.1, true),
+                (0.018, 0.75, 22, 16, -0.2, false), (0.048, 0.77, 10, 8, 0.5, true),
+                (0.225, 0.96, 24, 18,  0.4, false), (0.195, 0.97, 12, 9, -0.3, true),
+                (0.320, 0.96, 20, 15, -0.2, false), (0.345, 0.98, 10, 8,  0.2, true)
+            ]
+            for (idx, st) in shoreStones.enumerated() {
+                let sx = onLeft ? width * st.0 : width * (1.0 - st.0)
+                stampRiverStone(cx: sx, cy: height * st.1, rx: st.2 * s, ry: st.3 * s, rot: st.4, seed: 40 + idx, mossAmt: 0.95, isPebble: st.5)
+            }
+
+            // 2. Curved wooden plank deck + warm cedar handrails + dark bronze finial posts!
+            let steps = 54
+            for i in 0...steps {
+                let t = CGFloat(i) / CGFloat(steps)
                 let mt = 1 - t
                 let cx = mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x
                 let cy = mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
@@ -2678,60 +2744,61 @@ final class PondEngine {
                 let len = max(0.001, hypot(tx, ty))
                 let nx = -ty / len, ny = tx / len
 
-                // Leave crisp 1-cell micro-gaps between wooden planks so the plank rhythm reads unmistakably top-down
-                let isPost = (i % 6 == 0)
-                let plankSteps = 14
-                for k in -plankSteps...plankSteps {
-                    let frac = CGFloat(k) / CGFloat(plankSteps)
+                let isSeam = (i % 3 == 0)
+                let isPost = (i % 13 == 4)
+                let plankIdx = i / 3
+                let plankToneLight = (plankIdx % 2 == 0)
+
+                let widthSamples = 18
+                for k in -widthSamples...widthSamples {
+                    let frac = CGFloat(k) / CGFloat(widthSamples)
                     let px = cx + nx * frac * halfW
                     let py = cy + ny * frac * halfW
-                    if abs(frac) > 0.86 {
-                        // Lacquered cedar/vermilion side handrails & corner posts
-                        put(px: px, py: py, ch: isPost ? "O" : "=", kind: isPost ? 3 : 2, shDx: 5, shDy: 3)
-                    } else if i % 2 == 0 || abs(frac) < 0.80 {
-                        // Individual wooden deck planks with alternating grain tone
-                        let isLight = (i % 2 == 0)
-                        let ch: Character = isLight ? ((k + i) % 5 == 0 ? "#" : "=") : ((k + i) % 4 == 0 ? "-" : "=")
-                        put(px: px, py: py, ch: ch, kind: isLight ? 1 : 0, shDx: 5, shDy: 3)
+                    let absF = abs(frac)
+
+                    if absF > 0.85 {
+                        // Warm cedar handrail with dark bronze/black corner post caps (just like the reference photo!)
+                        if isPost {
+                            put(px: px, py: py, ch: "@", kind: 4, shDx: 6, shDy: 4, priority: 12)
+                        } else {
+                            let rCh: Character = absF > 0.92 ? "#" : "="
+                            put(px: px, py: py, ch: rCh, kind: 3, shDx: 6, shDy: 4, priority: 11)
+                        }
+                    } else {
+                        // Transverse weathered wooden deck planks with dark seams between boards
+                        let grain = hash2(CGFloat(plankIdx * 13 + k), CGFloat(i))
+                        if isSeam {
+                            put(px: px, py: py, ch: "-", kind: 0, shDx: 5, shDy: 3, priority: 10)
+                        } else {
+                            let isBright = plankToneLight && (grain > 0.35 || absF < 0.35)
+                            let pCh: Character = isBright ? (grain > 0.7 ? "#" : "=") : (grain > 0.65 ? "%" : "=")
+                            put(px: px, py: py, ch: pCh, kind: isBright ? 2 : 1, shDx: 5, shDy: 3, priority: 10)
+                        }
                     }
                 }
             }
         } else if config.pondAccent == "stones" {
-            // 4 natural Japanese mossy stepping stones (Tobi-ishi) curving across the opposite corner!
-            let specs: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
-                (0.045, 0.78, 34, 24,  0.22),
-                (0.115, 0.84, 30, 22, -0.18),
-                (0.175, 0.90, 36, 25,  0.30),
-                (0.235, 0.96, 28, 21, -0.12)
+            // Authentic Japanese mossy stepping stones (Tobi-ishi) surrounded by natural smaller river pebbles!
+            let bigStones: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
+                (0.042, 0.74, 38, 27,  0.22),
+                (0.118, 0.81, 34, 24, -0.20),
+                (0.185, 0.88, 40, 28,  0.28),
+                (0.258, 0.95, 34, 24, -0.14)
             ]
-            for (idx, sp) in specs.enumerated() {
+            // Smaller river pebbles scattered naturally around the stepping stones
+            let pebbles: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
+                (0.018, 0.69, 13, 10,  0.4), (0.078, 0.71, 11, 8, -0.3), (0.024, 0.81, 12, 9,  0.1),
+                (0.088, 0.86, 14, 10,  0.5), (0.150, 0.77, 11, 8, -0.4), (0.148, 0.85,  9, 7,  0.2),
+                (0.142, 0.93, 13, 10, -0.2), (0.222, 0.84, 12, 9,  0.3), (0.215, 0.94, 10, 8, -0.5),
+                (0.288, 0.91, 13,  9,  0.2), (0.305, 0.97, 11, 8, -0.1), (0.062, 0.78,  9, 7,  0.6)
+            ]
+            for (idx, pb) in pebbles.enumerated() {
+                let px = onLeft ? width * pb.0 : width * (1.0 - pb.0)
+                stampRiverStone(cx: px, cy: height * pb.1, rx: pb.2 * s, ry: pb.3 * s, rot: pb.4, seed: 100 + idx, mossAmt: 0.5, isPebble: true)
+            }
+            for (idx, sp) in bigStones.enumerated() {
                 let cx = onLeft ? width * sp.0 : width * (1.0 - sp.0)
-                let cy = height * sp.1
-                let rx = sp.2 * s, ry = sp.3 * s
-                let cCos = cos(-sp.4), cSin = sin(-sp.4)
-                let minC = max(0, Int(floor((cx - rx - 6) / cellW))), maxC = min(cols - 1, Int(ceil((cx + rx + 6) / cellW)))
-                let minR = max(0, Int(floor((cy - ry - 6) / cellH))), maxR = min(rows - 1, Int(ceil((cy + ry + 6) / cellH)))
-                guard minR <= maxR && minC <= maxC else { continue }
-                for r in minR...maxR {
-                    let dy = (CGFloat(r) + 0.5) * cellH - cy
-                    for c in minC...maxC {
-                        let dx = (CGFloat(c) + 0.5) * cellW - cx
-                        let lx = (dx * cCos - dy * cSin) / rx
-                        let ly = (dx * cSin + dy * cCos) / ry
-                        // Slightly irregular organic stone edge
-                        let ang = atan2(ly, lx)
-                        let edge = 1.0 + 0.11 * sin(ang * 3.0 + CGFloat(idx) * 2.1) + 0.06 * cos(ang * 5.0)
-                        let d = hypot(lx, ly) / edge
-                        if d <= 1.0 {
-                            let h = hash2(CGFloat(c + idx * 17), CGFloat(r))
-                            let isRim = d > 0.78
-                            let isMoss = isRim && h > 0.58
-                            let kind: UInt8 = isMoss ? 6 : (isRim ? 4 : 5)
-                            let ch: Character = isMoss ? "+" : (isRim ? "%" : (h > 0.62 ? "#" : (h > 0.25 ? "=" : ".")))
-                            put(px: (CGFloat(c) + 0.5) * cellW, py: (CGFloat(r) + 0.5) * cellH, ch: ch, kind: kind, shDx: 3, shDy: 2)
-                        }
-                    }
-                }
+                stampRiverStone(cx: cx, cy: height * sp.1, rx: sp.2 * s, ry: sp.3 * s, rot: sp.4, seed: 10 + idx, mossAmt: 1.0, isPebble: false)
             }
         }
 
@@ -3371,29 +3438,36 @@ final class PondEngine {
             }
         }
 
-        // Pre-rasterized top-down Zen Garden Accent (Wooden Bridge or Stepping Stones — Koi swim underneath the bridge!)
+        // Pre-rasterized top-down Zen Garden Accent (Japanese Hinoki Bridge or Mossy River Stones — Koi swim underneath!)
         if !config.minimalistMode && config.pondAccent != "none" {
             ensurePondAccentCache()
-            let woodDark = config.monoMode ? pal.stone : RGB(94, 62, 42)
-            let woodLight = config.monoMode ? pal.ripple : RGB(132, 92, 62)
-            let railRgb = config.monoMode ? pal.white : RGB(166, 62, 48) // Classic Japanese vermilion-cedar rail
-            let postRgb = config.monoMode ? pal.white : RGB(196, 86, 62)
-            let stoneDark = config.monoMode ? pal.stone : RGB(96, 108, 106)
-            let stoneTop = config.monoMode ? pal.ripple : RGB(144, 156, 152)
-            let mossRgb = config.monoMode ? pal.lotus : RGB(88, 148, 92)
+            // Natural weathered cedar/hinoki wood & river granite palette inspired by Kyoto garden ponds
+            let woodSeam   = config.monoMode ? pal.shadow : RGB(56, 40, 30)
+            let woodMid    = config.monoMode ? pal.stone  : RGB(126, 94, 68)
+            let woodSun    = config.monoMode ? pal.ripple : RGB(168, 128, 92)
+            let cedarRail  = config.monoMode ? pal.white  : RGB(182, 124, 74) // Warm natural hinoki handrail
+            let bronzePost = config.monoMode ? pal.shadow : RGB(46, 38, 34)   // Dark bronze finial cap
+            let stoneWet   = config.monoMode ? pal.shadow : RGB(68, 76, 74)
+            let stoneMid   = config.monoMode ? pal.stone  : RGB(114, 122, 118)
+            let stoneTop   = config.monoMode ? pal.ripple : RGB(158, 166, 158)
+            let mossDark   = config.monoMode ? pal.lotus  : RGB(66, 116, 62)
+            let mossBright = config.monoMode ? pal.lotusVein : RGB(118, 174, 86)
 
             for sh in accentShadowCells {
-                drawGlyph(ctx, sh.ch, col: sh.col, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.85)
+                drawGlyph(ctx, sh.ch, col: sh.col, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.86)
             }
             for ac in accentCells {
                 switch ac.kind {
-                case 0: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodDark.r, g: woodDark.g, b: woodDark.b, a: 0.96)
-                case 1: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodLight.r, g: woodLight.g, b: woodLight.b, a: 0.97)
-                case 2: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: railRgb.r, g: railRgb.g, b: railRgb.b, a: 0.98)
-                case 3: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: postRgb.r, g: postRgb.g, b: postRgb.b, a: 0.99)
-                case 4: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneDark.r, g: stoneDark.g, b: stoneDark.b, a: 0.96)
-                case 5: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneTop.r, g: stoneTop.g, b: stoneTop.b, a: 0.97)
-                default: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: mossRgb.r, g: mossRgb.g, b: mossRgb.b, a: 0.95)
+                case 0: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodSeam.r,   g: woodSeam.g,   b: woodSeam.b,   a: 0.96)
+                case 1: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodMid.r,    g: woodMid.g,    b: woodMid.b,    a: 0.97)
+                case 2: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodSun.r,    g: woodSun.g,    b: woodSun.b,    a: 0.98)
+                case 3: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: cedarRail.r,  g: cedarRail.g,  b: cedarRail.b,  a: 0.99)
+                case 4: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: bronzePost.r, g: bronzePost.g, b: bronzePost.b, a: 0.99)
+                case 5: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneWet.r,   g: stoneWet.g,   b: stoneWet.b,   a: 0.95)
+                case 6: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneMid.r,   g: stoneMid.g,   b: stoneMid.b,   a: 0.96)
+                case 7: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneTop.r,   g: stoneTop.g,   b: stoneTop.b,   a: 0.98)
+                case 8: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: mossDark.r,   g: mossDark.g,   b: mossDark.b,   a: 0.96)
+                default: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: mossBright.r, g: mossBright.g, b: mossBright.b, a: 0.98)
                 }
             }
         }
