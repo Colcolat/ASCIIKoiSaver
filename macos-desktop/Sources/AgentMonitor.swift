@@ -43,10 +43,10 @@ final class AgentMonitor {
             // Transition to done so the Koi performs its triumphant jump and swims away!
             manualDemos.removeAll { $0.id == mainId || $0.id.hasPrefix("\(mainId)-sub-") }
         } else {
-            manualDemos.append(AgentDescriptor(id: mainId, model: model, state: state, isSubagent: false))
+            manualDemos.append(AgentDescriptor(id: mainId, model: model, state: state, isSubagent: false, parentId: nil, formationSlot: 0))
             if withSubagents {
-                manualDemos.append(AgentDescriptor(id: "\(mainId)-sub-1", model: model, state: .thinking, isSubagent: true))
-                manualDemos.append(AgentDescriptor(id: "\(mainId)-sub-2", model: model, state: .editing, isSubagent: true))
+                manualDemos.append(AgentDescriptor(id: "\(mainId)-sub-1", model: model, state: .thinking, isSubagent: true, parentId: mainId, formationSlot: 0))
+                manualDemos.append(AgentDescriptor(id: "\(mainId)-sub-2", model: model, state: .editing, isSubagent: true, parentId: mainId, formationSlot: 1))
             }
         }
         poll()
@@ -78,29 +78,43 @@ final class AgentMonitor {
             for e in entries {
                 let model: AgentModel = e.model.lowercased().contains("claude") ? .claude : .gemini
                 let state = AgentState(rawValue: e.state.lowercased()) ?? .thinking
-                detected.append(AgentDescriptor(id: "hook-\(e.id)", model: model, state: state, isSubagent: false))
+                let mainHookId = "hook-\(e.id)"
+                detected.append(AgentDescriptor(id: mainHookId, model: model, state: state, isSubagent: false, parentId: nil, formationSlot: 0))
                 let subs = max(0, min(4, e.subagents ?? 0))
                 for s in 0..<subs {
-                    detected.append(AgentDescriptor(id: "hook-\(e.id)-sub-\(s)", model: model, state: .thinking, isSubagent: true))
+                    detected.append(AgentDescriptor(id: "\(mainHookId)-sub-\(s)", model: model, state: .thinking, isSubagent: true, parentId: mainHookId, formationSlot: s))
                 }
             }
         }
 
         // 2. Passive CLI process detection (claude / gemini)
-        let runningProcs = detectRunningCLIs()
-        for (idx, model) in runningProcs.enumerated() {
-            detected.append(AgentDescriptor(id: "cli-\(model.rawValue)-\(idx)", model: model, state: .editing, isSubagent: idx > 0))
-        }
+        if manualDemos.isEmpty {
+            let runningProcs = detectRunningCLIs()
+            for (idx, model) in runningProcs.enumerated() {
+                let isSub = idx > 0
+                detected.append(AgentDescriptor(
+                    id: "cli-\(model.rawValue)-\(idx)",
+                    model: model,
+                    state: .editing,
+                    isSubagent: isSub,
+                    parentId: isSub ? "cli-\(model.rawValue)-0" : nil,
+                    formationSlot: max(0, idx - 1)
+                ))
+            }
 
-        // 3. Passive Antigravity brain transcript activity (modified in last 14 seconds)
-        let activeBrains = detectRecentAntigravityActivity()
-        for idx in 0..<activeBrains {
-            detected.append(AgentDescriptor(
-                id: "agy-brain-\(idx)",
-                model: .gemini,
-                state: idx == 0 ? .thinking : .editing,
-                isSubagent: idx > 0
-            ))
+            // 3. Passive Antigravity brain transcript activity (modified in last 14 seconds)
+            let activeBrains = detectRecentAntigravityActivity()
+            for idx in 0..<activeBrains {
+                let isSub = idx > 0
+                detected.append(AgentDescriptor(
+                    id: "agy-brain-\(idx)",
+                    model: .gemini,
+                    state: idx == 0 ? .thinking : .editing,
+                    isSubagent: isSub,
+                    parentId: isSub ? "agy-brain-0" : nil,
+                    formationSlot: max(0, idx - 1)
+                ))
+            }
         }
 
         if detected != lastReported {

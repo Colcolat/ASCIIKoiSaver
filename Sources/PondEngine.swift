@@ -16,16 +16,19 @@ struct AgentDescriptor: Equatable {
     var model: AgentModel
     var state: AgentState
     var isSubagent: Bool = false
+    var parentId: String? = nil
+    var formationSlot: Int = 0
 }
 
 struct SaverConfig {
     var timeMode: String = "auto"   // auto | day | sunset | night
-    var season: String = "auto"     // auto | spring | summer | autumn | winter
+    var season: String = "auto"     // auto (weekday) | spring | summer | autumn | winter
     var koiCount: Int = 3
     var showClock: Bool = true
     var rainOn: Bool = false
     var monoMode: Bool = false
     var minimalistMode: Bool = false
+    var musicReactive: Bool = true
     var isPreview: Bool = false
 }
 
@@ -160,6 +163,8 @@ private struct Koi {
     var hasEntered: Bool
     var leaving: Bool
     var agentId: String? = nil
+    var parentAgentId: String? = nil
+    var formationSlot: Int = 0
     var agentState: AgentState? = nil
     var isSubagent: Bool = false
     var isTrashEater: Bool = false
@@ -377,6 +382,10 @@ final class PondEngine {
     private var stars: [(x: CGFloat, y: CGFloat, phase: CGFloat, spd: CGFloat)] = []
     private var trashCrumbs: [TrashCrumb] = []
     private var pendingTrashBite: (() -> Void)? = nil
+    private var agentsActive: Bool = false
+    private var isMusicPlaying: Bool = false
+    private var musicBeatPhase: CGFloat = 0
+    private var musicBeatTimer: CGFloat = 0
 
     private var time: CGFloat = 0
     private var rainTimer: CGFloat = 0
@@ -388,13 +397,17 @@ final class PondEngine {
         setupFont(size: 10.4)
     }
 
+    func setMusicPlaying(_ playing: Bool) {
+        isMusicPlaying = playing
+    }
+
     private func setupFont(size: CGFloat) {
         fontSize = size
         ctFont = CTFontCreateWithName("Menlo-Regular" as CFString, size, nil)
         cgFont = CTFontCopyGraphicsFont(ctFont, nil)
         glyphCache.removeAll()
 
-        let chars = " .,:;i1tfLCG08#%@WcoO~-=+*()<>/'°·|\\^"
+        let chars = " .,:;i1tfLCG08#%@WcoO~-=+*()<>/'°·|\\^✦♪"
         for ch in chars {
             var unichar = Array(String(ch).utf16)[0]
             var glyph: CGGlyph = 0
@@ -488,11 +501,14 @@ final class PondEngine {
 
     private func activeSeason() -> String {
         if config.season != "auto" { return config.season }
-        let m = Calendar.current.component(.month, from: Date()) // 1..12
-        if m >= 3 && m <= 5 { return "spring" }
-        if m >= 6 && m <= 8 { return "summer" }
-        if m >= 9 && m <= 11 { return "autumn" }
-        return "winter"
+        // Rotate seasons by day of the week: Mon/Tue=Spring, Wed/Thu=Summer, Fri/Sat=Autumn, Sun=Winter
+        let wd = Calendar.current.component(.weekday, from: Date()) // 1=Sun, 2=Mon..7=Sat
+        switch wd {
+        case 2, 3: return "spring"
+        case 4, 5: return "summer"
+        case 6, 7: return "autumn"
+        default:   return "winter"
+        }
     }
 
     private func currentPalette() -> Palette {
@@ -751,6 +767,32 @@ final class PondEngine {
 
     func syncAgents(_ activeAgents: [AgentDescriptor]) {
         let activeIds = Set(activeAgents.map { $0.id })
+        let hasLiveAgents = activeAgents.contains { $0.state != .done }
+        agentsActive = hasLiveAgents
+
+        // When AI agents enter, gently send ambient pond Koi off-screen to keep the pond spacious
+        if hasLiveAgents {
+            for i in 0..<fishes.count where fishes[i].agentId == nil && !fishes[i].isTrashEater && !fishes[i].leaving {
+                fishes[i].leaving = true
+                let exitEdge = Int.random(in: 0..<4)
+                let far = 440 * fishes[i].scale
+                switch exitEdge {
+                case 0: fishes[i].targetX = -far; fishes[i].targetY = CGFloat.random(in: 0...height)
+                case 1: fishes[i].targetX = width + far; fishes[i].targetY = CGFloat.random(in: 0...height)
+                case 2: fishes[i].targetX = CGFloat.random(in: 0...width); fishes[i].targetY = -far
+                default: fishes[i].targetX = CGFloat.random(in: 0...width); fishes[i].targetY = height + far
+                }
+            }
+        } else {
+            // Agents finished — bring ambient pond Koi back in smoothly from the edges!
+            let ambientCount = fishes.filter { $0.agentId == nil && !$0.isTrashEater && !$0.leaving }.count
+            let targetAmbient = max(1, min(5, config.koiCount))
+            if ambientCount < targetAmbient {
+                for _ in 0..<(targetAmbient - ambientCount) {
+                    fishes.append(spawnKoiFromEdge())
+                }
+            }
+        }
 
         // Mark removed or .done agents for triumphant breach + exit
         for i in 0..<fishes.count {
@@ -765,6 +807,8 @@ final class PondEngine {
             if let idx = fishes.firstIndex(where: { $0.agentId == ag.id }) {
                 let prevState = fishes[idx].agentState
                 fishes[idx].agentState = ag.state
+                fishes[idx].parentAgentId = ag.parentId
+                fishes[idx].formationSlot = ag.formationSlot
                 if ag.state == .done && !fishes[idx].leaving {
                     triggerAgentDeparture(&fishes[idx])
                 } else if ag.state == .error && prevState != .error {
@@ -774,9 +818,11 @@ final class PondEngine {
                 }
             } else if ag.state != .done {
                 let variety: KoiVariety = (ag.model == .gemini) ? .gemini : .claude
-                let scaleMult: CGFloat = ag.isSubagent ? 0.72 : 1.08
+                let scaleMult: CGFloat = ag.isSubagent ? 0.68 : 1.12
                 var koi = spawnKoiFromEdge(forcedVariety: variety, scaleMult: scaleMult, forcedZ: ag.isSubagent ? 0.78 : 0.92)
                 koi.agentId = ag.id
+                koi.parentAgentId = ag.parentId
+                koi.formationSlot = ag.formationSlot
                 koi.agentState = ag.state
                 koi.isSubagent = ag.isSubagent
                 fishes.append(koi)
@@ -926,6 +972,18 @@ final class PondEngine {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
 
+        // Music-reactive rhythmic beat pulse (~116 BPM when audio is playing)
+        if config.musicReactive && isMusicPlaying {
+            musicBeatPhase += dt * 12.15
+            musicBeatTimer -= dt
+            if musicBeatTimer <= 0 {
+                if let f = fishes.randomElement(), let head = f.renderNodes.first {
+                    ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 54 * f.scale, alpha: 0.52))
+                }
+                musicBeatTimer = 0.52
+            }
+        }
+
         var fIdx = fishes.count - 1
         while fIdx >= 0 {
             updateKoi(&fishes[fIdx], dt: dt)
@@ -935,7 +993,7 @@ final class PondEngine {
                     rn.x <= -padOut || rn.x >= width + padOut || rn.y <= -padOut || rn.y >= height + padOut
                 }
                 if allOut {
-                    if fishes[fIdx].agentId != nil || fishes[fIdx].isTrashEater {
+                    if fishes[fIdx].agentId != nil || fishes[fIdx].isTrashEater || agentsActive {
                         fishes.remove(at: fIdx)
                     } else {
                         fishes[fIdx] = spawnKoiFromEdge()
@@ -1076,42 +1134,73 @@ final class PondEngine {
                 fish.targetX = -420 * fish.scale
                 fish.targetY = height * 0.45
             }
+        } else if fish.isSubagent, let pid = fish.parentAgentId, !fish.leaving,
+                  let parent = fishes.first(where: { $0.agentId == pid }) {
+            // Subagents swim smoothly in V-formation escort behind their parent Agent Koi!
+            let pHead = parent.nodes[0]
+            let pTx = cos(parent.angle), pTy = sin(parent.angle)
+            let pNx = -pTy, pNy = pTx
+            let side: CGFloat = (fish.formationSlot % 2 == 0) ? -1.0 : 1.0
+            let rank = CGFloat((fish.formationSlot / 2) + 1)
+            let backDist = (115.0 + rank * 75.0) * parent.scale
+            let sideDist = (72.0 + rank * 42.0) * parent.scale
+            fish.targetX = pHead.x - pTx * backDist + pNx * (side * sideDist)
+            fish.targetY = pHead.y - pTy * backDist + pNy * (side * sideDist)
+            fish.targetZ = max(0.35, parent.z - 0.08)
         } else if let st = fish.agentState, !fish.leaving {
-            // Reactive AI Agent Koi behaviors
+            // Reactive AI Agent Koi behaviors (always wide, graceful paths — never coiling!)
+            func pickWideTarget() {
+                var tx = CGFloat.random(in: width * 0.16...max(width * 0.17, width * 0.84))
+                var ty = CGFloat.random(in: height * 0.16...max(height * 0.17, height * 0.84))
+                // Ensure waypoint is far enough away so the Koi never loops in a tight knot
+                if hypot(tx - head.x, ty - head.y) < 260 {
+                    tx = head.x < width * 0.5 ? width * 0.78 : width * 0.22
+                    ty = head.y < height * 0.5 ? height * 0.75 : height * 0.25
+                }
+                fish.targetX = tx
+                fish.targetY = ty
+            }
+
             switch st {
             case .thinking:
-                fish.targetZ = 0.65
+                fish.targetZ = 0.68
                 if fish.stateRippleTimer <= 0 {
                     bubbles.append(Bubble(x: head.x, y: head.y, z: 0.65, vz: 0.35, wigglePhase: 0, wiggleAmp: 5))
-                    fish.stateRippleTimer = CGFloat.random(in: 0.9...1.7)
+                    fish.stateRippleTimer = CGFloat.random(in: 1.0...1.8)
                 }
-                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 90 || fish.wanderTimer <= 0 {
-                    let orbitAng = time * 0.55 + fish.seed
-                    fish.targetX = width * 0.5 + cos(orbitAng) * width * 0.24
-                    fish.targetY = height * 0.5 + sin(orbitAng) * height * 0.22
-                    fish.wanderTimer = 2.4
+                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 160 || fish.wanderTimer <= 0 {
+                    let orbitAng = time * 0.38 + fish.seed
+                    fish.targetX = width * 0.5 + cos(orbitAng) * width * 0.30
+                    fish.targetY = height * 0.5 + sin(orbitAng) * height * 0.26
+                    fish.wanderTimer = 3.2
                 }
             case .editing:
-                fish.targetZ = 0.92
+                fish.targetZ = 0.90
                 if fish.stateRippleTimer <= 0 {
                     ripples.append(Ripple(x: head.x, y: head.y, r: 3, maxR: 38 * fish.scale, alpha: 0.48))
-                    fish.stateRippleTimer = 0.55
+                    fish.stateRippleTimer = 0.60
                 }
-                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 90 || fish.wanderTimer <= 0 {
-                    fish.targetX = CGFloat.random(in: width * 0.14...max(width * 0.15, width * 0.86))
-                    fish.targetY = CGFloat.random(in: height * 0.14...max(height * 0.15, height * 0.86))
-                    fish.wanderTimer = 2.2
+                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 160 || fish.wanderTimer <= 0 {
+                    pickWideTarget()
+                    fish.wanderTimer = 3.6
                 }
             case .waiting:
-                fish.targetZ = 0.97
-                fish.targetX = width * 0.50 + sin(time * 0.8 + fish.seed) * 70
-                fish.targetY = height * 0.72 + cos(time * 0.6 + fish.seed) * 35
+                fish.targetZ = 0.96
+                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 160 || fish.wanderTimer <= 0 {
+                    fish.targetX = width * (head.x < width * 0.5 ? 0.68 : 0.32)
+                    fish.targetY = height * 0.70
+                    fish.wanderTimer = 4.0
+                }
                 if fish.stateRippleTimer <= 0 {
                     ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 62, alpha: 0.72))
                     fish.stateRippleTimer = 1.25
                 }
             case .error:
                 fish.targetZ = 0.95
+                if hypot(fish.targetX - head.x, fish.targetY - head.y) < 160 || fish.wanderTimer <= 0 {
+                    pickWideTarget()
+                    fish.wanderTimer = 3.0
+                }
                 if fish.stateRippleTimer <= 0 {
                     ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 72, alpha: 0.88))
                     fish.stateRippleTimer = 0.75
@@ -1119,7 +1208,7 @@ final class PondEngine {
             case .done:
                 break
             }
-        } else if !fish.leaving && (hypot(fish.targetX - head.x, fish.targetY - head.y) < 85 || fish.wanderTimer <= 0) {
+        } else if !fish.leaving && (hypot(fish.targetX - head.x, fish.targetY - head.y) < 110 || fish.wanderTimer <= 0) {
             if fish.hasEntered && CGFloat.random(in: 0...1) < 0.35 {
                 fish.leaving = true
                 let exitEdge = Int.random(in: 0..<4)
@@ -1139,25 +1228,31 @@ final class PondEngine {
 
         let desiredAngle = atan2(fish.targetY - head.y, fish.targetX - head.x)
         let diff = normalizeAngle(desiredAngle - fish.angle)
-        let maxTurn = fish.turnRate * (fish.agentState == .editing ? 1.35 : 1.0) * dt
+        // Cap turnRate smoothly so spine never coils into a tight pretzel!
+        let maxTurn = min(1.18, fish.turnRate) * dt
         let deltaAngle = max(-maxTurn, min(maxTurn, diff))
         fish.angle += deltaAngle
         fish.turnVel = deltaAngle / dt
 
         let turnEffort = min(1.0, abs(diff) * 0.9)
+        let musicPulse: CGFloat = (config.musicReactive && isMusicPlaying) ? (1.0 + 0.24 * max(0, sin(musicBeatPhase))) : 1.0
         let stateSpeedMult: CGFloat = {
-            if fish.isTrashEater && fish.trashTarget != nil { return 1.48 }
+            if fish.isTrashEater && fish.trashTarget != nil { return 1.45 }
+            if fish.isSubagent, let pid = fish.parentAgentId, let parent = fishes.first(where: { $0.agentId == pid }) {
+                let d = hypot(fish.targetX - head.x, fish.targetY - head.y)
+                return d > 180 ? 1.38 : (d < 70 ? 0.72 : (parent.speed / max(1, fish.baseSpeed)))
+            }
             switch fish.agentState {
-            case .editing: return 1.42
-            case .waiting: return 0.62
-            case .thinking: return 0.88
+            case .editing: return 1.28
+            case .waiting: return 0.78
+            case .thinking: return 0.90
             default: return 1.0
             }
         }()
-        let surge: CGFloat = fish.breaching ? 1.38 : stateSpeedMult
-        let targetSpeed = fish.baseSpeed * surge * (1.0 + turnEffort * 0.28)
+        let surge: CGFloat = (fish.breaching ? 1.38 : stateSpeedMult) * musicPulse
+        let targetSpeed = fish.baseSpeed * surge * (1.0 + turnEffort * 0.22)
         fish.speed += (targetSpeed - fish.speed) * min(1.0, dt * 3.2)
-        fish.phase += dt * (4.5 + turnEffort * 2.2 + (fish.breaching ? 2.5 : 0))
+        fish.phase += dt * (4.5 * musicPulse + turnEffort * 2.0 + (fish.breaching ? 2.5 : 0))
 
         fish.nodes[0].x += cos(fish.angle) * fish.speed * dt
         fish.nodes[0].y += sin(fish.angle) * fish.speed * dt
@@ -1526,12 +1621,23 @@ final class PondEngine {
         case .ogon:
             return 3
         case .gemini:
-            // Electric blue -> indigo-violet -> bright cyan shimmer along spine!
-            if abs(normLat) < 0.28 && n3 > 0.56 { return 6 }
-            return (t + n1 * 0.35) < 0.52 ? 4 : 5
+            // Crisp 4-pointed Gemini sparkle star logo on the shoulders (t ≈ 0.34, normLat ≈ 0)
+            let gx = (t - 0.34) / 0.125
+            let gy = normLat / 0.68
+            let astroid = pow(abs(gx), 0.58) + pow(abs(gy), 0.58)
+            if astroid < 0.88 { return 6 } // Bright cyan-white Gemini 4-point star!
+            return (t + n1 * 0.28) < 0.50 ? 4 : 5
         case .claude:
-            // Warm terracotta/coral saddles over soft pearly cream
-            return n1 > 0.42 ? 7 : 8
+            // Crisp Claude 8-ray sunburst/asterisk star logo on the shoulders (t ≈ 0.34, normLat ≈ 0)
+            let cx = (t - 0.34) / 0.12
+            let cy = normLat / 0.66
+            let cr = hypot(cx, cy)
+            if cr < 0.92 {
+                let ang = atan2(cy, cx)
+                let ray = abs(sin(ang * 4.0)) // 8 radiating arms!
+                if cr < 0.24 || ray < 0.22 { return 8 } // Bright warm cream Claude starburst!
+            }
+            return n1 > 0.32 ? 7 : 8
         case .trashEater:
             // Bold obsidian & bronze-gold Koi
             return n1 > 0.54 ? 3 : 2
@@ -1904,9 +2010,9 @@ final class PondEngine {
     }
 
     private func isClockCell(_ c: Int, _ r: Int, _ chars: [Character]) -> Bool {
-        if !config.showClock || config.isPreview { return false }
-        let scaleX = cols > 150 ? 2 : 1
-        let scaleY = rows > 55 ? 2 : 1
+        if !config.showClock || config.isPreview || config.minimalistMode { return false }
+        let scaleX = cols > 170 ? 3 : (cols > 120 ? 2 : 1)
+        let scaleY = rows > 60 ? 3 : (rows > 40 ? 2 : 1)
         let charW = 6 * scaleX
         let totalW = chars.count * charW - scaleX
         let totalH = 7 * scaleY
@@ -1953,8 +2059,13 @@ final class PondEngine {
         let pal = currentPalette()
         let actSeason = activeSeason()
 
-        ctx.setFillColor(red: pal.bg.r, green: pal.bg.g, blue: pal.bg.b, alpha: 1.0)
-        ctx.fill(rect)
+        if config.minimalistMode {
+            // Truly transparent over the user's real macOS desktop wallpaper!
+            ctx.clear(rect)
+        } else {
+            ctx.setFillColor(red: pal.bg.r, green: pal.bg.g, blue: pal.bg.b, alpha: 1.0)
+            ctx.fill(rect)
+        }
 
         ctx.setFont(cgFont)
         ctx.setFontSize(fontSize)
@@ -2155,12 +2266,14 @@ final class PondEngine {
                     continue
                 }
 
-                // 6. Submerged stone clock
+                // 6. Submerged stone clock (clearer, luminous carved look)
                 if !config.minimalistMode && isClockCell(c, r, timeChars) {
-                    let shimmer = 0.75 + 0.25 * sin(CGFloat(c) * 0.2 + time * 1.1)
-                    drawGlyph(ctx, ":", col: c, row: r, r: pal.clock.r * shimmer, g: pal.clock.g * shimmer, b: pal.clock.b * shimmer, a: 0.62)
+                    let shimmer = 1.65 + 0.35 * sin(CGFloat(c) * 0.18 + time * 1.1)
+                    drawGlyph(ctx, "#", col: c, row: r, r: min(1, pal.clock.r * shimmer), g: min(1, pal.clock.g * shimmer), b: min(1, pal.clock.b * shimmer), a: 0.88)
                     continue
                 }
+
+                if config.minimalistMode { continue }
 
                 // 7. Moon reflection & stones & caustics
                 let wave = sin(CGFloat(c) * 0.14 + time * 0.75 + sin(CGFloat(r) * 0.23 + time * 0.4)) *
@@ -2206,7 +2319,7 @@ final class PondEngine {
         }
 
         // Twinkling reflected stars on open water at Night
-        if pal.tod == "night" {
+        if !config.minimalistMode && pal.tod == "night" {
             for st in stars {
                 if sampleLotus(st.x, st.y) != nil { continue }
                 let twinkle = sin(time * st.spd + st.phase)
@@ -2374,7 +2487,7 @@ final class PondEngine {
         }
 
         // Fireflies at night/sunset
-        if pal.tod == "night" || pal.tod == "sunset" {
+        if !config.minimalistMode && (pal.tod == "night" || pal.tod == "sunset") {
             let mult: CGFloat = pal.tod == "night" ? 1.0 : 0.45
             for ff in fireflies {
                 let glow = max(0, sin(ff.phase))

@@ -27,10 +27,12 @@ swiftc \
   -framework AppKit \
   -framework QuartzCore \
   -framework CoreText \
+  -framework CoreAudio \
   -o "$APP_DIR/Contents/MacOS/ASCIIKoiDesktop" \
   "$ROOT_DIR/Sources/PondEngine.swift" \
   "$DESKTOP_DIR/Sources/AgentMonitor.swift" \
   "$DESKTOP_DIR/Sources/TrashMonitor.swift" \
+  "$DESKTOP_DIR/Sources/MusicMonitor.swift" \
   "$DESKTOP_DIR/Sources/DesktopWallpaperManager.swift" \
   "$DESKTOP_DIR/Sources/AppDelegate.swift"
 

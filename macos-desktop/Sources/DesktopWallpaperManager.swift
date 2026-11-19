@@ -5,7 +5,7 @@ import QuartzCore
 private final class DesktopPondView: NSView {
     let engine = PondEngine()
 
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { !engine.config.minimalistMode }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
@@ -23,8 +23,20 @@ final class DesktopWallpaperManager {
 
     var config = SaverConfig() {
         didSet {
-            for v in views { v.engine.applyConfig(config) }
+            for (win, v) in zip(windows, views) {
+                v.engine.applyConfig(config)
+                win.isOpaque = !config.minimalistMode
+                win.backgroundColor = config.minimalistMode
+                    ? .clear
+                    : NSColor(calibratedRed: 0.02, green: 0.08, blue: 0.10, alpha: 1.0)
+                win.invalidateShadow()
+                v.needsDisplay = true
+            }
         }
+    }
+
+    func setMusicPlaying(_ playing: Bool) {
+        for v in views { v.engine.setMusicPlaying(playing) }
     }
 
     var desktopClicksEnabled: Bool = true
@@ -93,9 +105,11 @@ final class DesktopWallpaperManager {
             win.level = desktopLevel
             win.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
             win.ignoresMouseEvents = true
-            win.isOpaque = true
+            win.isOpaque = !config.minimalistMode
             win.hasShadow = false
-            win.backgroundColor = NSColor(calibratedRed: 0.02, green: 0.08, blue: 0.10, alpha: 1.0)
+            win.backgroundColor = config.minimalistMode
+                ? .clear
+                : NSColor(calibratedRed: 0.02, green: 0.08, blue: 0.10, alpha: 1.0)
             win.isReleasedWhenClosed = false
 
             let pondView = DesktopPondView(frame: NSRect(origin: .zero, size: screen.frame.size))

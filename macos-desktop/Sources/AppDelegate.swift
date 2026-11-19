@@ -7,9 +7,11 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     private let wallpaper = DesktopWallpaperManager()
     private let agentMonitor = AgentMonitor()
     private let trashMonitor = TrashMonitor()
+    private let musicMonitor = MusicMonitor()
 
     private var statusMenuItem: NSMenuItem!
     private var agentsMenuItem: NSMenuItem!
+    private var musicMenuItem: NSMenuItem!
     private var feedTrashMenuItem: NSMenuItem!
     private var pauseMenuItem: NSMenuItem!
 
@@ -75,9 +77,17 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
             }
         }
         trashMonitor.start()
+
+        musicMonitor.onMusicStateChanged = { [weak self] playing in
+            guard let self = self else { return }
+            self.wallpaper.setMusicPlaying(playing)
+            self.musicMenuItem.title = playing ? "Music: Playing ♪ (Reactive)" : "Music: Idle"
+        }
+        musicMonitor.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        musicMonitor.stop()
         agentMonitor.stop()
         trashMonitor.stop()
         wallpaper.stop()
@@ -95,6 +105,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         config.rainOn = d.bool(forKey: "rainOn")
         config.monoMode = d.bool(forKey: "monoMode")
         config.minimalistMode = d.bool(forKey: "minimalistMode")
+        config.musicReactive = d.object(forKey: "musicReactive") == nil ? true : d.bool(forKey: "musicReactive")
         wallpaper.desktopClicksEnabled = d.object(forKey: "desktopClicks") == nil ? true : d.bool(forKey: "desktopClicks")
     }
 
@@ -107,6 +118,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         d.set(config.rainOn, forKey: "rainOn")
         d.set(config.monoMode, forKey: "monoMode")
         d.set(config.minimalistMode, forKey: "minimalistMode")
+        d.set(config.musicReactive, forKey: "musicReactive")
         d.set(wallpaper.desktopClicksEnabled, forKey: "desktopClicks")
         wallpaper.config = config
     }
@@ -130,6 +142,10 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         agentsMenuItem = NSMenuItem(title: "AI Agents: Idle", action: nil, keyEquivalent: "")
         agentsMenuItem.isEnabled = false
         menu.addItem(agentsMenuItem)
+
+        musicMenuItem = NSMenuItem(title: "Music: Idle", action: nil, keyEquivalent: "")
+        musicMenuItem.isEnabled = false
+        menu.addItem(musicMenuItem)
 
         menu.addItem(.separator())
 
@@ -177,7 +193,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
 
         // Season Submenu
         let seasonSub = NSMenu()
-        for (title, val) in [("Automatic (Calendar)", "auto"), ("Spring (Sakura)", "spring"), ("Summer", "summer"), ("Autumn (Maple Leaves)", "autumn"), ("Winter (Snow)", "winter")] {
+        for (title, val) in [("Automatic (Day of Week)", "auto"), ("Spring (Sakura)", "spring"), ("Summer", "summer"), ("Autumn (Maple Leaves)", "autumn"), ("Winter (Snow)", "winter")] {
             let item = NSMenuItem(title: title, action: #selector(selectSeason(_:)), keyEquivalent: "")
             item.representedObject = val
             item.state = (config.season == val) ? .on : .off
@@ -210,7 +226,8 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
             item.target = self
             menu.addItem(item)
         }
-        addToggle("Minimalist Mode (Koi + Agents + Trash only)", isOn: config.minimalistMode, action: #selector(toggleMinimalist(_:)))
+        addToggle("Minimalist Mode (Transparent over Wallpaper)", isOn: config.minimalistMode, action: #selector(toggleMinimalist(_:)))
+        addToggle("Music Reactive ♪", isOn: config.musicReactive, action: #selector(toggleMusicReactive(_:)))
         addToggle("Submerged Stone Clock", isOn: config.showClock, action: #selector(toggleClock(_:)))
         addToggle("Gentle Rain", isOn: config.rainOn, action: #selector(toggleRain(_:)))
         addToggle("Pure ASCII Mode (Monochrome)", isOn: config.monoMode, action: #selector(toggleMono(_:)))
@@ -292,6 +309,12 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     @objc private func toggleMinimalist(_ sender: NSMenuItem) {
         config.minimalistMode.toggle()
         sender.state = config.minimalistMode ? .on : .off
+        savePreferences()
+    }
+
+    @objc private func toggleMusicReactive(_ sender: NSMenuItem) {
+        config.musicReactive.toggle()
+        sender.state = config.musicReactive ? .on : .off
         savePreferences()
     }
 
