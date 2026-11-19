@@ -494,7 +494,8 @@ final class PondEngine {
     private func activeTimeOfDay() -> String {
         if config.timeMode != "auto" { return config.timeMode }
         let hr = Calendar.current.component(.hour, from: Date())
-        if hr >= 6 && hr < 17 { return "day" }
+        if hr >= 6 && hr < 13 { return "day" }
+        if hr >= 13 && hr < 17 { return "afternoon" }
         if hr >= 17 && hr < 20 { return "sunset" }
         return "night"
     }
@@ -529,6 +530,25 @@ final class PondEngine {
                 leafSpring: [RGB(212,222,236), RGB(184,196,212), RGB(232,240,248)],
                 leafSummer: [RGB(154,168,182), RGB(184,198,212), RGB(134,148,164)],
                 snow: RGB(238, 244, 252), eye: RGB(3, 5, 8)
+            )
+        }
+        if tod == "afternoon" {
+            // Warm sun-drenched afternoon pond: deep golden-teal water with honey-warm caustics
+            return Palette(
+                tod: tod, bg: RGB(10, 28, 28), waterDeep: RGB(18, 50, 48), stone: RGB(48, 76, 68), clock: RGB(72, 108, 92),
+                water: RGB(214, 198, 134), waterAlpha: 0.23, ripple: RGB(250, 236, 186), shadow: RGB(4, 10, 12), shadowAlpha: 0.66,
+                lotus: RGB(54, 124, 68), lotusVein: RGB(96, 174, 98), flower: RGB(255, 206, 212),
+                white: RGB(252, 246, 232), red: RGB(248, 82, 36), black: RGB(24, 30, 34), gold: RGB(255, 206, 62),
+                fin: RGB(236, 238, 224), finBlack: RGB(36, 42, 46), barbel: RGB(252, 240, 216),
+                turtleShell: RGB(82, 122, 64), turtleRim: RGB(196, 168, 88), turtleSkin: RGB(98, 132, 76),
+                minnow: RGB(224, 236, 218), plant: RGB(40, 102, 62), plantTip: RGB(86, 168, 96),
+                bubble: RGB(242, 248, 224), splash: RGB(255, 252, 236),
+                dragonfly: RGB(96, 228, 232), wing: RGB(246, 244, 220), frog: RGB(96, 182, 76),
+                firefly: RGB(255, 244, 132), moon: RGB(255, 238, 196),
+                leafAutumn: [RGB(244,92,42), RGB(254,186,48), RGB(218,54,44)],
+                leafSpring: [RGB(255,192,212), RGB(255,224,234), RGB(246,154,186)],
+                leafSummer: [RGB(76,172,82), RGB(108,200,98), RGB(58,146,72)],
+                snow: RGB(248, 246, 240), eye: RGB(5, 10, 10)
             )
         }
         if tod == "sunset" {
@@ -972,21 +992,39 @@ final class PondEngine {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
 
-        // Music-reactive rhythmic beat pulse (~116 BPM when audio is playing)
+        // Music-reactive rhythmic beat pulse (~118 BPM when audio is playing)
         if config.musicReactive && isMusicPlaying {
-            musicBeatPhase += dt * 12.15
+            musicBeatPhase += dt * 12.4
             musicBeatTimer -= dt
             if musicBeatTimer <= 0 {
                 if let f = fishes.randomElement(), let head = f.renderNodes.first {
-                    ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 54 * f.scale, alpha: 0.52))
+                    ripples.append(Ripple(x: head.x, y: head.y, r: 4, maxR: 62 * f.scale, alpha: 0.62))
+                    // Float a tiny musical note above the dancing Koi!
+                    trashCrumbs.append(TrashCrumb(
+                        x: head.x + CGFloat.random(in: -18...18),
+                        y: head.y + CGFloat.random(in: -18...18),
+                        vx: CGFloat.random(in: -12...12),
+                        vy: CGFloat.random(in: -22 ... -10),
+                        ch: "♪",
+                        life: 1.4
+                    ))
                 }
-                musicBeatTimer = 0.52
+                musicBeatTimer = 0.48
+            }
+        }
+
+        // Snapshot parent agent positions BEFORE inout mutation to avoid Swift exclusive-access crash!
+        var parentLookup: [String: (x: CGFloat, y: CGFloat, angle: CGFloat, z: CGFloat, scale: CGFloat, speed: CGFloat)] = [:]
+        for f in fishes {
+            if let aid = f.agentId, !f.isSubagent, let h = f.nodes.first {
+                parentLookup[aid] = (h.x, h.y, f.angle, f.z, f.scale, f.speed)
             }
         }
 
         var fIdx = fishes.count - 1
         while fIdx >= 0 {
-            updateKoi(&fishes[fIdx], dt: dt)
+            let pInfo = fishes[fIdx].parentAgentId.flatMap { parentLookup[$0] }
+            updateKoi(&fishes[fIdx], dt: dt, parentInfo: pInfo)
             if fishes[fIdx].leaving {
                 let padOut = 110 * fishes[fIdx].scale
                 let allOut = fishes[fIdx].renderNodes.allSatisfy { rn in
@@ -1067,7 +1105,7 @@ final class PondEngine {
         }
     }
 
-    private func updateKoi(_ fish: inout Koi, dt: CGFloat) {
+    private func updateKoi(_ fish: inout Koi, dt: CGFloat, parentInfo: (x: CGFloat, y: CGFloat, angle: CGFloat, z: CGFloat, scale: CGFloat, speed: CGFloat)?) {
         if !fish.breaching {
             fish.breachCooldown -= dt
             if fish.breachCooldown <= 0 && fish.z > 0.68 && !fish.leaving {
@@ -1134,18 +1172,16 @@ final class PondEngine {
                 fish.targetX = -420 * fish.scale
                 fish.targetY = height * 0.45
             }
-        } else if fish.isSubagent, let pid = fish.parentAgentId, !fish.leaving,
-                  let parent = fishes.first(where: { $0.agentId == pid }) {
+        } else if fish.isSubagent, let parent = parentInfo, !fish.leaving {
             // Subagents swim smoothly in V-formation escort behind their parent Agent Koi!
-            let pHead = parent.nodes[0]
             let pTx = cos(parent.angle), pTy = sin(parent.angle)
             let pNx = -pTy, pNy = pTx
             let side: CGFloat = (fish.formationSlot % 2 == 0) ? -1.0 : 1.0
             let rank = CGFloat((fish.formationSlot / 2) + 1)
             let backDist = (115.0 + rank * 75.0) * parent.scale
             let sideDist = (72.0 + rank * 42.0) * parent.scale
-            fish.targetX = pHead.x - pTx * backDist + pNx * (side * sideDist)
-            fish.targetY = pHead.y - pTy * backDist + pNy * (side * sideDist)
+            fish.targetX = parent.x - pTx * backDist + pNx * (side * sideDist)
+            fish.targetY = parent.y - pTy * backDist + pNy * (side * sideDist)
             fish.targetZ = max(0.35, parent.z - 0.08)
         } else if let st = fish.agentState, !fish.leaving {
             // Reactive AI Agent Koi behaviors (always wide, graceful paths — never coiling!)
@@ -1235,10 +1271,11 @@ final class PondEngine {
         fish.turnVel = deltaAngle / dt
 
         let turnEffort = min(1.0, abs(diff) * 0.9)
-        let musicPulse: CGFloat = (config.musicReactive && isMusicPlaying) ? (1.0 + 0.24 * max(0, sin(musicBeatPhase))) : 1.0
+        let isGrooving = config.musicReactive && isMusicPlaying
+        let musicPulse: CGFloat = isGrooving ? (1.0 + 0.30 * max(0, sin(musicBeatPhase))) : 1.0
         let stateSpeedMult: CGFloat = {
             if fish.isTrashEater && fish.trashTarget != nil { return 1.45 }
-            if fish.isSubagent, let pid = fish.parentAgentId, let parent = fishes.first(where: { $0.agentId == pid }) {
+            if fish.isSubagent, let parent = parentInfo {
                 let d = hypot(fish.targetX - head.x, fish.targetY - head.y)
                 return d > 180 ? 1.38 : (d < 70 ? 0.72 : (parent.speed / max(1, fish.baseSpeed)))
             }
@@ -1274,7 +1311,13 @@ final class PondEngine {
             tx /= len; ty /= len
             let nx = -ty, ny = tx
             let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale
-            let sway = sin(fish.phase - t * 6.5) * amp
+            var sway = sin(fish.phase - t * 6.5) * amp
+            if isGrooving {
+                // Distinct rhythmic head-bob & body-wag to the music beat!
+                let headBob = sin(musicBeatPhase + fish.seed * 0.25) * (8.5 * (1.0 - t * 0.55) * fish.scale)
+                let bodyGroove = sin(musicBeatPhase * 1.0 - t * 5.2) * (6.5 * fish.scale)
+                sway += headBob + bodyGroove
+            }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
         }
 

@@ -180,7 +180,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
 
         // Time of Day Submenu
         let timeSub = NSMenu()
-        for (title, val) in [("Automatic (System Clock)", "auto"), ("Day", "day"), ("Sunset", "sunset"), ("Night (Fireflies & Stars)", "night")] {
+        for (title, val) in [("Automatic (System Clock)", "auto"), ("Morning / Day", "day"), ("Afternoon (Warm Sun)", "afternoon"), ("Sunset", "sunset"), ("Night (Fireflies & Stars)", "night")] {
             let item = NSMenuItem(title: title, action: #selector(selectTimeMode(_:)), keyEquivalent: "")
             item.representedObject = val
             item.state = (config.timeMode == val) ? .on : .off
