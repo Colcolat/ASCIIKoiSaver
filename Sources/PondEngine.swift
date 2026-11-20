@@ -1322,63 +1322,63 @@ final class PondEngine {
         }
 
         var breachAirArc: CGFloat = 0
-        var breachPitchTilt: CGFloat = 0
         var breachPrep: Bool = false
 
         if fish.breaching {
-            fish.breachProgress += dt / 1.72
+            fish.breachProgress += dt / 1.55
             let p = min(1.0, fish.breachProgress)
 
-            if p < 0.24 {
-                // Stage 1: Preparation coil & dip just beneath the surface
+            if p < 0.20 {
+                // Stage 1: Smooth underwater coil & prep (tail whips faster, slight dip)
                 breachPrep = true
-                let prepT = p / 0.24
-                fish.z = 0.88 - sin(prepT * .pi) * 0.16
+                let prepT = p / 0.20
+                fish.z = 0.88 - sin(prepT * .pi) * 0.14
             } else if p < 0.86 {
-                // Stage 2: Explosive launch, pitched-up climb, C-curve mid-air arch, and head-first dive!
-                let airP = (p - 0.24) / 0.62
+                // Stage 2: Clean launch & smooth airborne arc (constant segLen so fins NEVER glitch!)
+                let airP = (p - 0.20) / 0.66
                 breachAirArc = sin(airP * .pi)
-                breachPitchTilt = abs(cos(airP * .pi)) // steepest tilt at launch & dive entry
-                fish.z = 1.0 + breachAirArc * 0.68
+                fish.z = 1.0 + breachAirArc * 0.56
 
                 if !fish.breachLaunched {
                     fish.breachLaunched = true
                     let pt = fish.renderNodes[min(2, fish.N - 1)]
-                    spawnSplashBurst(x: pt.x, y: pt.y, count: 18, power: 1.25)
+                    spawnSplashBurst(x: pt.x, y: pt.y, count: 24, power: 1.35)
                 }
 
-                // Trailing airborne sparkling water droplets shaking off fins & tail!
+                // Sparkling airborne water droplets trailing off the leaping Koi
                 fish.breachSplashTick -= dt
                 if fish.breachSplashTick <= 0 {
                     let s = screenScale()
-                    let nodeIdx = min(fish.N - 1, max(1, Int((1.0 - airP * 0.5) * CGFloat(fish.N - 2))))
+                    let nodeIdx = min(fish.N - 1, max(1, Int((1.0 - airP * 0.45) * CGFloat(fish.N - 2))))
                     let pt = fish.renderNodes[nodeIdx]
-                    for _ in 0..<5 {
+                    for _ in 0..<6 {
                         let ang = CGFloat.random(in: 0...(2 * .pi))
-                        let spd = CGFloat.random(in: 22...76) * s
+                        let spd = CGFloat.random(in: 28...92) * s
                         splashes.append(Splash(
-                            x: pt.x + CGFloat.random(in: -8...8) * s,
-                            y: pt.y + CGFloat.random(in: -8...8) * s,
-                            z: max(1.04, fish.z - 0.06),
+                            x: pt.x + CGFloat.random(in: -10...10) * s,
+                            y: pt.y + CGFloat.random(in: -10...10) * s,
+                            z: max(1.05, fish.z - 0.04),
                             vx: cos(ang) * spd, vy: sin(ang) * spd,
-                            vz: CGFloat.random(in: 0.6...2.1),
+                            vz: CGFloat.random(in: 1.1...2.5),
                             big: Bool.random()
                         ))
                     }
-                    fish.breachSplashTick = 0.075
+                    fish.breachSplashTick = 0.08
                 }
             } else {
-                // Stage 3: Head-first splashdown with massive water burst & triple concentric ripples!
+                // Stage 3: BIG frothy splashdown with ~42 water droplets & 4 layered ripples!
                 fish.breaching = false
                 fish.breachProgress = 0
                 fish.breachLaunched = false
-                fish.z = 0.86
+                fish.z = 0.84
                 fish.targetZ = CGFloat.random(in: 0.48...0.82)
                 let headPt = fish.renderNodes[min(2, fish.N - 1)]
                 let midPt = fish.renderNodes[fish.N / 2]
-                spawnSplashBurst(x: headPt.x, y: headPt.y, count: 28, power: 1.48)
-                spawnSplashBurst(x: midPt.x, y: midPt.y, count: 10, power: 0.95)
-                ripples.append(Ripple(x: headPt.x, y: headPt.y, r: 8 * fish.scale, maxR: 135 * fish.scale, alpha: 0.96))
+                let tailPt = fish.renderNodes[fish.N - 2]
+                spawnSplashBurst(x: headPt.x, y: headPt.y, count: 28, power: 1.55)
+                spawnSplashBurst(x: midPt.x, y: midPt.y, count: 14, power: 1.15)
+                ripples.append(Ripple(x: headPt.x, y: headPt.y, r: 10 * fish.scale, maxR: 155 * fish.scale, alpha: 0.98))
+                ripples.append(Ripple(x: tailPt.x, y: tailPt.y, r: 4 * fish.scale, maxR: 92 * fish.scale, alpha: 0.80))
             }
         } else {
             fish.zTimer -= dt
@@ -1386,7 +1386,7 @@ final class PondEngine {
             fish.z += (fish.targetZ - fish.z) * min(1.0, dt * 0.55)
         }
 
-        let breachBoost: CGFloat = fish.z > 1.0 ? (fish.z - 1.0) * 0.44 : 0
+        let breachBoost: CGFloat = fish.z > 1.0 ? (fish.z - 1.0) * 0.34 : 0
         fish.scale = fish.baseScale * (0.86 + min(1.0, fish.z) * 0.18 + breachBoost)
         fish.segLen = 9.4 * fish.scale
         fish.barbelSegLen = 5.2 * fish.scale
@@ -1536,14 +1536,13 @@ final class PondEngine {
         fish.nodes[0].x += cos(fish.angle) * fish.speed * dt
         fish.nodes[0].y += sin(fish.angle) * fish.speed * dt
 
-        // Pitch foreshortening: when launching up or diving head-first into the water, spine compresses along travel axis!
-        let effSegLen = fish.segLen * (1.0 - breachPitchTilt * 0.24)
+        // Always keep segLen constant so spine & fins NEVER fold or glitch during jumps!
         for i in 1..<fish.N {
             let prev = fish.nodes[i - 1], curr = fish.nodes[i]
             let dx = curr.x - prev.x, dy = curr.y - prev.y
             let d = max(0.0001, hypot(dx, dy))
-            fish.nodes[i].x = prev.x + (dx / d) * effSegLen
-            fish.nodes[i].y = prev.y + (dy / d) * effSegLen
+            fish.nodes[i].x = prev.x + (dx / d) * fish.segLen
+            fish.nodes[i].y = prev.y + (dy / d) * fish.segLen
         }
 
         for i in 0..<fish.N {
@@ -1554,11 +1553,11 @@ final class PondEngine {
             let len = max(0.0001, hypot(tx, ty))
             tx /= len; ty /= len
             let nx = -ty, ny = tx
-            let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale * (breachPrep ? 1.35 : 1.0)
+            let amp = (1.1 + 20.0 * pow(t, 1.95)) * fish.scale * (breachPrep ? 1.25 : 1.0)
             var sway = sin(fish.phase - t * 6.5) * amp
             if breachAirArc > 0.01 {
-                // Athletic mid-air C-curve body arch & twist as the Koi leaps through the air!
-                sway = sway * 0.35 + fish.breachDir * sin(t * .pi) * breachAirArc * 28.0 * fish.scale
+                // Smooth, clean mid-air C-arch (no fin overlap or kinking!)
+                sway = sway * 0.45 + fish.breachDir * sin(t * .pi) * breachAirArc * 10.5 * fish.scale
             }
             if config.musicReactive && abs(beatNod) > 0.01 && t < 0.28 {
                 // Clean head-only turn (snout to gills) locked 1-to-1 with real beats
@@ -1882,9 +1881,9 @@ final class PondEngine {
         while sIdx >= 0 {
             splashes[sIdx].x += splashes[sIdx].vx * dt
             splashes[sIdx].y += splashes[sIdx].vy * dt
-            splashes[sIdx].vx *= exp(-1.4 * dt)
-            splashes[sIdx].vy *= exp(-1.4 * dt)
-            splashes[sIdx].vz -= 4.2 * dt
+            splashes[sIdx].vx *= exp(-1.1 * dt)
+            splashes[sIdx].vy *= exp(-1.1 * dt)
+            splashes[sIdx].vz -= 2.8 * dt
             splashes[sIdx].z += splashes[sIdx].vz * dt
             if splashes[sIdx].z <= 1.0 && splashes[sIdx].vz < 0 {
                 let sp = splashes[sIdx]
@@ -2714,26 +2713,30 @@ final class PondEngine {
         }
 
         if config.pondAccent == "bridge" {
-            // Authentic Japanese curved cedar/hinoki wooden footbridge seen 100% TOP-DOWN
-            let p0 = onLeft ? CGPoint(x: -18, y: height * 0.68) : CGPoint(x: width + 18, y: height * 0.68)
-            let p1 = onLeft ? CGPoint(x: width * 0.16, y: height * 0.81) : CGPoint(x: width * 0.84, y: height * 0.81)
-            let p2 = onLeft ? CGPoint(x: width * 0.28, y: height + 18) : CGPoint(x: width * 0.72, y: height + 18)
-            let halfW: CGFloat = 40 * s
+            // Authentic Japanese curved cedar/hinoki footbridge spanning the CENTER-MIDDLE of the pond!
+            // Anchored on left & right by natural mossy garden islets so Koi swim cleanly underneath!
+            let p0 = CGPoint(x: width * 0.28, y: height * 0.77)
+            let p1 = CGPoint(x: width * 0.50, y: height * 0.71)
+            let p2 = CGPoint(x: width * 0.72, y: height * 0.77)
+            let halfW: CGFloat = 38 * s
 
-            // 1. Anchor both ends of the bridge with natural mossy shoreline stones & small pebbles!
+            // 1. Anchor both ends of the central bridge with natural mossy river boulders & small pebbles!
             let shoreStones: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, Bool)] = [
-                (0.025, 0.63, 24, 18,  0.3, false), (0.055, 0.65, 11, 9, 0.1, true),
-                (0.018, 0.75, 22, 16, -0.2, false), (0.048, 0.77, 10, 8, 0.5, true),
-                (0.225, 0.96, 24, 18,  0.4, false), (0.195, 0.97, 12, 9, -0.3, true),
-                (0.320, 0.96, 20, 15, -0.2, false), (0.345, 0.98, 10, 8,  0.2, true)
+                // Left islet anchoring bridgehead
+                (0.265, 0.74, 30, 22,  0.25, false), (0.255, 0.80, 26, 20, -0.22, false),
+                (0.232, 0.77, 16, 12,  0.40, true),  (0.292, 0.82, 13, 10, -0.30, true),
+                (0.286, 0.71, 12,  9,  0.15, true),  (0.245, 0.72, 10,  8,  0.50, true),
+                // Right islet anchoring bridgehead
+                (0.735, 0.74, 30, 22, -0.25, false), (0.745, 0.80, 26, 20,  0.22, false),
+                (0.768, 0.77, 16, 12, -0.40, true),  (0.708, 0.82, 13, 10,  0.30, true),
+                (0.714, 0.71, 12,  9, -0.15, true),  (0.755, 0.72, 10,  8, -0.50, true)
             ]
             for (idx, st) in shoreStones.enumerated() {
-                let sx = onLeft ? width * st.0 : width * (1.0 - st.0)
-                stampRiverStone(cx: sx, cy: height * st.1, rx: st.2 * s, ry: st.3 * s, rot: st.4, seed: 40 + idx, mossAmt: 0.95, isPebble: st.5)
+                stampRiverStone(cx: width * st.0, cy: height * st.1, rx: st.2 * s, ry: st.3 * s, rot: st.4, seed: 40 + idx, mossAmt: 1.0, isPebble: st.5)
             }
 
             // 2. Curved wooden plank deck + warm cedar handrails + dark bronze finial posts!
-            let steps = 54
+            let steps = 60
             for i in 0...steps {
                 let t = CGFloat(i) / CGFloat(steps)
                 let mt = 1 - t
@@ -2745,7 +2748,7 @@ final class PondEngine {
                 let nx = -ty / len, ny = tx / len
 
                 let isSeam = (i % 3 == 0)
-                let isPost = (i % 13 == 4)
+                let isPost = (i == 2 || i == 20 || i == 40 || i == 58)
                 let plankIdx = i / 3
                 let plankToneLight = (plankIdx % 2 == 0)
 
@@ -2757,7 +2760,6 @@ final class PondEngine {
                     let absF = abs(frac)
 
                     if absF > 0.85 {
-                        // Warm cedar handrail with dark bronze/black corner post caps (just like the reference photo!)
                         if isPost {
                             put(px: px, py: py, ch: "@", kind: 4, shDx: 6, shDy: 4, priority: 12)
                         } else {
@@ -2765,7 +2767,6 @@ final class PondEngine {
                             put(px: px, py: py, ch: rCh, kind: 3, shDx: 6, shDy: 4, priority: 11)
                         }
                     } else {
-                        // Transverse weathered wooden deck planks with dark seams between boards
                         let grain = hash2(CGFloat(plankIdx * 13 + k), CGFloat(i))
                         if isSeam {
                             put(px: px, py: py, ch: "-", kind: 0, shDx: 5, shDy: 3, priority: 10)
@@ -2778,27 +2779,27 @@ final class PondEngine {
                 }
             }
         } else if config.pondAccent == "stones" {
-            // Authentic Japanese mossy stepping stones (Tobi-ishi) surrounded by natural smaller river pebbles!
+            // 5 authentic Japanese mossy stepping stones (Tobi-ishi) curving across the CENTER-MIDDLE of the pond!
             let bigStones: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
-                (0.042, 0.74, 38, 27,  0.22),
-                (0.118, 0.81, 34, 24, -0.20),
-                (0.185, 0.88, 40, 28,  0.28),
-                (0.258, 0.95, 34, 24, -0.14)
+                (0.30, 0.78, 36, 25,  0.18),
+                (0.40, 0.75, 32, 23, -0.22),
+                (0.50, 0.73, 40, 27,  0.12),
+                (0.60, 0.76, 33, 24, -0.18),
+                (0.70, 0.79, 36, 25,  0.24)
             ]
-            // Smaller river pebbles scattered naturally around the stepping stones
+            // 14 smaller natural river pebbles clustered organically around the stepping stones
             let pebbles: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
-                (0.018, 0.69, 13, 10,  0.4), (0.078, 0.71, 11, 8, -0.3), (0.024, 0.81, 12, 9,  0.1),
-                (0.088, 0.86, 14, 10,  0.5), (0.150, 0.77, 11, 8, -0.4), (0.148, 0.85,  9, 7,  0.2),
-                (0.142, 0.93, 13, 10, -0.2), (0.222, 0.84, 12, 9,  0.3), (0.215, 0.94, 10, 8, -0.5),
-                (0.288, 0.91, 13,  9,  0.2), (0.305, 0.97, 11, 8, -0.1), (0.062, 0.78,  9, 7,  0.6)
+                (0.26, 0.76, 13, 10,  0.4), (0.33, 0.82, 11, 8, -0.3), (0.35, 0.73, 12, 9,  0.2),
+                (0.43, 0.79, 13,  9,  0.5), (0.45, 0.71, 11, 8, -0.4), (0.48, 0.78, 10, 7,  0.1),
+                (0.54, 0.70, 12,  9, -0.2), (0.56, 0.78, 14, 10, 0.3), (0.63, 0.72, 11, 8, -0.5),
+                (0.65, 0.80, 12,  9,  0.2), (0.74, 0.77, 13, 10,-0.1), (0.72, 0.83, 10, 8,  0.6),
+                (0.28, 0.82, 10,  7, -0.3), (0.51, 0.79, 11, 8,  0.4)
             ]
             for (idx, pb) in pebbles.enumerated() {
-                let px = onLeft ? width * pb.0 : width * (1.0 - pb.0)
-                stampRiverStone(cx: px, cy: height * pb.1, rx: pb.2 * s, ry: pb.3 * s, rot: pb.4, seed: 100 + idx, mossAmt: 0.5, isPebble: true)
+                stampRiverStone(cx: width * pb.0, cy: height * pb.1, rx: pb.2 * s, ry: pb.3 * s, rot: pb.4, seed: 100 + idx, mossAmt: 0.65, isPebble: true)
             }
             for (idx, sp) in bigStones.enumerated() {
-                let cx = onLeft ? width * sp.0 : width * (1.0 - sp.0)
-                stampRiverStone(cx: cx, cy: height * sp.1, rx: sp.2 * s, ry: sp.3 * s, rot: sp.4, seed: 10 + idx, mossAmt: 1.0, isPebble: false)
+                stampRiverStone(cx: width * sp.0, cy: height * sp.1, rx: sp.2 * s, ry: sp.3 * s, rot: sp.4, seed: 10 + idx, mossAmt: 1.0, isPebble: false)
             }
         }
 
@@ -3382,13 +3383,13 @@ final class PondEngine {
             }
         }
 
-        // Splash droplets
+        // Splash droplets (crisp, frothy airborne water spray!)
         for sp in splashes {
             let sc = Int(sp.x / cellW), sr = Int(sp.y / cellH)
             if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
                 let h = max(0, sp.z - 1.0)
-                let ch: Character = h > 0.32 ? (sp.big ? "*" : "°") : (h > 0.14 ? "o" : "'")
-                drawGlyph(ctx, ch, col: sc, row: sr, r: pal.splash.r, g: pal.splash.g, b: pal.splash.b, a: min(1, 0.58 + h * 1.4))
+                let ch: Character = h > 0.36 ? (sp.big ? "@" : "*") : (h > 0.16 ? (sp.big ? "*" : "°") : "o")
+                drawGlyph(ctx, ch, col: sc, row: sr, r: pal.splash.r, g: pal.splash.g, b: pal.splash.b, a: min(1, 0.72 + h * 1.2))
             }
         }
 
