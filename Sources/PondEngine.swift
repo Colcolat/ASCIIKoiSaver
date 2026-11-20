@@ -1176,7 +1176,7 @@ final class PondEngine {
         // Tempo-locked rhythm clock: keeps Koi heads turning Left <-> Right in steady BPM rhythm
         musicNoteCooldown = max(0, musicNoteCooldown - dt)
         if config.musicReactive && isMusicPlaying && (time - lastRealBeatTime) < 2.8 {
-            beatEnergy *= exp(-4.8 * dt)
+            beatEnergy *= exp(-3.4 * dt) // Punchy, visible bloom-and-fade on each bass hit!
             rhythmTimer += dt
             // Slight 22ms predictive lead compensates for CoreAudio + display pipeline latency
             let nextBeatAt = max(0.32, estimatedBeatInterval - 0.022)
@@ -3405,16 +3405,17 @@ final class PondEngine {
             for (idx, lp) in lotusPads.enumerated() {
                 let ox = sin(time * 0.55 + lp.phase) * 2.5
                 let oy = cos(time * 0.45 + lp.phase) * 2.0
-                let ringR = (14 + beatEnergy * 18) * screenScale()
-                let isPink = (idx % 2 == 0)
+                let ringR = (15 + beatEnergy * 34) * screenScale()
+                let isPink = ((idx + beatCounter) % 2 == 0)
                 let rgb = isPink ? RGB(255, 48, 172) : RGB(0, 245, 255)
-                let steps = 16
+                let steps = 20
                 for s in 0..<steps {
                     let ang = CGFloat(s) * (2.0 * .pi / CGFloat(steps)) + time * 0.45
                     let rc = Int((lp.x + ox + cos(ang) * ringR) / cellW)
                     let rr = Int((lp.y + oy + sin(ang) * ringR) / cellH)
                     if rc >= 0 && rc < cols && rr >= 0 && rr < rows {
-                        drawGlyph(ctx, s % 2 == 0 ? "~" : "·", col: rc, row: rr, r: rgb.r, g: rgb.g, b: rgb.b, a: 0.42 + beatEnergy * 0.45)
+                        let rCh: Character = beatEnergy > 0.35 ? (s % 2 == 0 ? "*" : "~") : (s % 2 == 0 ? "~" : "·")
+                        drawGlyph(ctx, rCh, col: rc, row: rr, r: rgb.r, g: rgb.g, b: rgb.b, a: min(0.95, 0.36 + beatEnergy * 0.62))
                     }
                 }
             }
@@ -3460,17 +3461,17 @@ final class PondEngine {
             }
         }
 
-        // Vice City Mode: Strong, Smooth Bass-Reactive Neon Screen Border Glow (CoreGraphics gradient wash + gradual ASCII fade!)
+        // Vice City Mode: Strong, Smooth Bass-Reactive Neon Screen Border Glow (stays softly lit at rest, surges dramatically on bass!)
         if !config.minimalistMode && pal.tod == "vice" && !config.monoMode && cols > 14 && rows > 10 {
-            let energy = min(1.0, max(beatEnergy, audioBass * 0.75))
+            let energy = min(1.0, beatEnergy * 1.15)
             let flip = (beatCounter % 2 == 0)
             let colA = flip ? RGB(255, 42, 162) : RGB(0, 245, 255) // Hot Magenta <-> Electric Cyan
             let colB = flip ? RGB(0, 245, 255) : RGB(255, 42, 162)
 
-            // 1. Smooth CoreGraphics neon light wash along all 4 edges (strong at edges, fading smoothly inward!)
-            let bandW: CGFloat = (55 + energy * 115) * screenScale()
-            let bandH: CGFloat = (48 + energy * 105) * screenScale()
-            let edgeAlpha: CGFloat = min(0.62, 0.14 + energy * 0.48)
+            // 1. Smooth CoreGraphics neon light wash along all 4 edges (soft ambient at rest -> dramatic surge on every bass hit!)
+            let bandW: CGFloat = (52 + energy * 155) * screenScale()
+            let bandH: CGFloat = (46 + energy * 140) * screenScale()
+            let edgeAlpha: CGFloat = min(0.82, 0.16 + energy * 0.66)
             let cs = CGColorSpaceCreateDeviceRGB()
 
             func drawEdgeGradient(rect: CGRect, start: CGPoint, end: CGPoint, rgb: RGB) {
