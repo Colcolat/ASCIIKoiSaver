@@ -510,8 +510,8 @@ final class PondEngine {
             beatEnergy = max(beatEnergy, min(1.0, beatHit))
             musicHold = 1.0
 
-            // Big expanding bass ripples radiating outward from the lotus pads (nenúfares)!
-            if !config.minimalistMode && !lotusPads.isEmpty {
+            // Big expanding bass ripples radiating outward from the lotus pads (normal pond only — disabled in Vice City mode!)
+            if !config.minimalistMode && viceCityBlend <= 0.45 && !lotusPads.isEmpty {
                 for (idx, lp) in lotusPads.enumerated() {
                     if beatHit > 0.62 || (idx % 2 == beatCounter % 2) {
                         let ox = sin(time * 0.55 + lp.phase) * 2.5
@@ -1591,11 +1591,6 @@ final class PondEngine {
             if breachAirArc > 0.01 {
                 // Smooth, clean mid-air C-arch (no fin overlap or kinking!)
                 sway = sway * 0.45 + fish.breachDir * sin(t * .pi) * breachAirArc * 10.5 * fish.scale
-            }
-            if config.musicReactive && abs(beatNod) > 0.01 && t < 0.28 {
-                // Clean head-only turn (snout to gills) locked 1-to-1 with real beats
-                let headFactor = pow(1.0 - (t / 0.28), 1.35)
-                sway += beatNod * (16.0 * headFactor * fish.scale)
             }
             fish.renderNodes[i] = RenderNode(x: fish.nodes[i].x + nx * sway, y: fish.nodes[i].y + ny * sway, nx: nx, ny: ny)
         }
@@ -3419,32 +3414,10 @@ final class PondEngine {
             }
         }
 
-        // Vice City Mode: Neon Equalizer Pulse Rings replacing the sunken lily pads!
-        if !config.minimalistMode && pal.tod == "vice" && !config.monoMode {
-            for (idx, lp) in lotusPads.enumerated() {
-                let ox = sin(time * 0.55 + lp.phase) * 2.5
-                let oy = cos(time * 0.45 + lp.phase) * 2.0
-                let ringR = (15 + beatEnergy * 34) * screenScale()
-                let isPink = ((idx + beatCounter) % 2 == 0)
-                let rgb = isPink ? RGB(255, 48, 172) : RGB(0, 245, 255)
-                let steps = 20
-                for s in 0..<steps {
-                    let ang = CGFloat(s) * (2.0 * .pi / CGFloat(steps)) + time * 0.45
-                    let rc = Int((lp.x + ox + cos(ang) * ringR) / cellW)
-                    let rr = Int((lp.y + oy + sin(ang) * ringR) / cellH)
-                    if rc >= 0 && rc < cols && rr >= 0 && rr < rows {
-                        let rCh: Character = beatEnergy > 0.35 ? (s % 2 == 0 ? "*" : "~") : (s % 2 == 0 ? "~" : "·")
-                        drawGlyph(ctx, rCh, col: rc, row: rr, r: rgb.r, g: rgb.g, b: rgb.b, a: min(0.95, 0.36 + beatEnergy * 0.62))
-                    }
-                }
-            }
-        }
-
-        // Overhanging corner tree branch OR Musical Vice City Palm Tree (pre-rasterized -> ~0.1ms/frame!)
+        // Overhanging corner tree branch OR Vice City Tropical Palm Tree (pre-rasterized -> ~0.1ms/frame!)
         if !config.minimalistMode && config.treeBranch != "none" {
             ensureTreeBranchCache(season: actSeason)
-            let musicSway: CGFloat = (pal.tod == "vice" && config.musicReactive) ? (beatNod * 1.9) : 0
-            let breeze = sin(time * 0.85) * 1.15 + musicSway
+            let breeze = sin(time * 0.85) * 1.15
             let barkDark = config.monoMode ? pal.stone : (pal.tod == "vice" ? RGB(68, 30, 82) : RGB(78, 56, 44))
             let barkLight = config.monoMode ? pal.ripple : (pal.tod == "vice" ? RGB(132, 58, 128) : RGB(118, 86, 66))
             let branchPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
@@ -3487,10 +3460,10 @@ final class PondEngine {
             let colA = flip ? RGB(255, 42, 162) : RGB(0, 245, 255) // Hot Magenta <-> Electric Cyan
             let colB = flip ? RGB(0, 245, 255) : RGB(255, 42, 162)
 
-            // 1. Smooth CoreGraphics neon light wash along all 4 edges (balanced & classy, never harsh!)
-            let bandW: CGFloat = (48 + energy * 92) * screenScale()
-            let bandH: CGFloat = (42 + energy * 82) * screenScale()
-            let edgeAlpha: CGFloat = min(0.54, 0.14 + energy * 0.40)
+            // 1. Smooth CoreGraphics neon light wash along all 4 edges (subtle, refined glow!)
+            let bandW: CGFloat = (44 + energy * 78) * screenScale()
+            let bandH: CGFloat = (38 + energy * 70) * screenScale()
+            let edgeAlpha: CGFloat = min(0.40, 0.11 + energy * 0.29)
             let cs = CGColorSpaceCreateDeviceRGB()
 
             func drawEdgeGradient(rect: CGRect, start: CGPoint, end: CGPoint, rgb: RGB) {
@@ -3522,7 +3495,7 @@ final class PondEngine {
             for layer in 0..<depthR {
                 let norm = CGFloat(layer) / CGFloat(max(1, depthR))
                 let falloff = pow(1.0 - norm, 1.85)
-                let a = min(0.95, (0.22 + energy * 0.78) * falloff)
+                let a = min(0.76, (0.16 + energy * 0.56) * falloff)
                 if a < 0.06 { continue }
                 let ch: Character = layer == 0 ? "#" : (layer == 1 ? "=" : (layer <= 3 ? "~" : "·"))
                 let step = layer <= 1 ? 1 : (layer <= 3 ? 2 : 3)
@@ -3545,7 +3518,7 @@ final class PondEngine {
             for layer in 0..<depthC {
                 let norm = CGFloat(layer) / CGFloat(max(1, depthC))
                 let falloff = pow(1.0 - norm, 1.85)
-                let a = min(0.95, (0.22 + energy * 0.78) * falloff)
+                let a = min(0.76, (0.16 + energy * 0.56) * falloff)
                 if a < 0.06 { continue }
                 let ch: Character = layer <= 1 ? "#" : (layer <= 3 ? ":" : "·")
                 let step = layer <= 2 ? 1 : 2
