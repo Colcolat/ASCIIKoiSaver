@@ -3460,38 +3460,76 @@ final class PondEngine {
             }
         }
 
-        // Vice City Mode: Bass-Reactive Neon Screen Border (pulses Hot Magenta <-> Electric Cyan on every beat!)
-        if !config.minimalistMode && pal.tod == "vice" && !config.monoMode && cols > 10 && rows > 8 {
-            let pulse = min(1.0, 0.28 + beatEnergy * 0.95)
-            let depth = beatEnergy > 0.45 ? 3 : 2
+        // Vice City Mode: Strong, Smooth Bass-Reactive Neon Screen Border Glow (CoreGraphics gradient wash + gradual ASCII fade!)
+        if !config.minimalistMode && pal.tod == "vice" && !config.monoMode && cols > 14 && rows > 10 {
+            let energy = min(1.0, max(beatEnergy, audioBass * 0.75))
             let flip = (beatCounter % 2 == 0)
             let colA = flip ? RGB(255, 42, 162) : RGB(0, 245, 255) // Hot Magenta <-> Electric Cyan
             let colB = flip ? RGB(0, 245, 255) : RGB(255, 42, 162)
 
-            // Top & Bottom glowing neon edges
-            for layer in 0..<depth {
-                let layerFade: CGFloat = layer == 0 ? 1.0 : (layer == 1 ? 0.52 : 0.24)
-                let a = min(0.96, pulse * layerFade)
-                let ch: Character = layer == 0 ? (beatEnergy > 0.35 ? "=" : "~") : "·"
-                for c in stride(from: 0, to: cols, by: layer == 0 ? 1 : 2) {
+            // 1. Smooth CoreGraphics neon light wash along all 4 edges (strong at edges, fading smoothly inward!)
+            let bandW: CGFloat = (55 + energy * 115) * screenScale()
+            let bandH: CGFloat = (48 + energy * 105) * screenScale()
+            let edgeAlpha: CGFloat = min(0.62, 0.14 + energy * 0.48)
+            let cs = CGColorSpaceCreateDeviceRGB()
+
+            func drawEdgeGradient(rect: CGRect, start: CGPoint, end: CGPoint, rgb: RGB) {
+                let colors = [
+                    CGColor(colorSpace: cs, components: [rgb.r, rgb.g, rgb.b, edgeAlpha])!,
+                    CGColor(colorSpace: cs, components: [rgb.r, rgb.g, rgb.b, edgeAlpha * 0.35])!,
+                    CGColor(colorSpace: cs, components: [rgb.r, rgb.g, rgb.b, 0.0])!
+                ] as CFArray
+                let locs: [CGFloat] = [0.0, 0.42, 1.0]
+                if let grad = CGGradient(colorsSpace: cs, colors: colors, locations: locs) {
+                    ctx.saveGState()
+                    ctx.clip(to: rect)
+                    ctx.drawLinearGradient(grad, start: start, end: end, options: [])
+                    ctx.restoreGState()
+                }
+            }
+
+            // AppKit CGContext y=0 is bottom, y=height is top
+            drawEdgeGradient(rect: CGRect(x: 0, y: height - bandH, width: width, height: bandH), start: CGPoint(x: 0, y: height), end: CGPoint(x: 0, y: height - bandH), rgb: colA)
+            drawEdgeGradient(rect: CGRect(x: 0, y: 0, width: width, height: bandH), start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: bandH), rgb: colB)
+            drawEdgeGradient(rect: CGRect(x: 0, y: 0, width: bandW, height: height), start: CGPoint(x: 0, y: 0), end: CGPoint(x: bandW, y: 0), rgb: colA)
+            drawEdgeGradient(rect: CGRect(x: width - bandW, y: 0, width: bandW, height: height), start: CGPoint(x: width, y: 0), end: CGPoint(x: width - bandW, y: 0), rgb: colB)
+
+            // 2. Gradual ASCII neon pulse aura (dense & bright at edges, softly dissolving inward!)
+            let depthR = min(rows / 3, 4 + Int(energy * 6.0))
+            let depthC = min(cols / 4, 6 + Int(energy * 10.0))
+            let topStartR = min(3, rows / 6) // Start right below macOS menu bar so top glow is 100% visible!
+
+            for layer in 0..<depthR {
+                let norm = CGFloat(layer) / CGFloat(max(1, depthR))
+                let falloff = pow(1.0 - norm, 1.85)
+                let a = min(0.95, (0.22 + energy * 0.78) * falloff)
+                if a < 0.06 { continue }
+                let ch: Character = layer == 0 ? "#" : (layer == 1 ? "=" : (layer <= 3 ? "~" : "·"))
+                let step = layer <= 1 ? 1 : (layer <= 3 ? 2 : 3)
+                for c in stride(from: 0, to: cols, by: step) {
                     let frac = CGFloat(c) / CGFloat(max(1, cols - 1))
                     let rT = colA.r * (1 - frac) + colB.r * frac
                     let gT = colA.g * (1 - frac) + colB.g * frac
                     let bT = colA.b * (1 - frac) + colB.b * frac
-                    drawGlyph(ctx, ch, col: c, row: layer, r: rT, g: gT, b: bT, a: a)
-
+                    if topStartR + layer < rows {
+                        drawGlyph(ctx, ch, col: c, row: topStartR + layer, r: rT, g: gT, b: bT, a: a)
+                    }
                     let rB = colB.r * (1 - frac) + colA.r * frac
                     let gB = colB.g * (1 - frac) + colA.g * frac
                     let bB = colB.b * (1 - frac) + colA.b * frac
-                    drawGlyph(ctx, ch, col: c, row: rows - 1 - layer, r: rB, g: gB, b: bB, a: a)
+                    if rows - 1 - layer >= 0 {
+                        drawGlyph(ctx, ch, col: c, row: rows - 1 - layer, r: rB, g: gB, b: bB, a: a)
+                    }
                 }
             }
-            // Left & Right glowing neon edges
-            for layer in 0..<depth {
-                let layerFade: CGFloat = layer == 0 ? 1.0 : (layer == 1 ? 0.52 : 0.24)
-                let a = min(0.96, pulse * layerFade)
-                let ch: Character = layer == 0 ? (beatEnergy > 0.35 ? "|" : ":") : "·"
-                for r in stride(from: depth, to: rows - depth, by: 1) {
+            for layer in 0..<depthC {
+                let norm = CGFloat(layer) / CGFloat(max(1, depthC))
+                let falloff = pow(1.0 - norm, 1.85)
+                let a = min(0.95, (0.22 + energy * 0.78) * falloff)
+                if a < 0.06 { continue }
+                let ch: Character = layer <= 1 ? "#" : (layer <= 3 ? ":" : "·")
+                let step = layer <= 2 ? 1 : 2
+                for r in stride(from: topStartR, to: rows, by: step) {
                     let frac = CGFloat(r) / CGFloat(max(1, rows - 1))
                     let rL = colA.r * (1 - frac) + colB.r * frac
                     let gL = colA.g * (1 - frac) + colB.g * frac
