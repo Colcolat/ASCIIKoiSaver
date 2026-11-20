@@ -93,7 +93,8 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         trashMonitor.start()
 
         wallpaper.audioFrameProvider = { [weak self] in
-            self?.musicMonitor.consumeAudioFrame() ?? (0, 0, false)
+            guard let frame = self?.musicMonitor.consumeAudioFrame() else { return (0, 0, false, []) }
+            return (frame.bass, frame.beatHit, frame.playing, frame.spectrum)
         }
         musicMonitor.onStatusChanged = { [weak self] _, detail in
             self?.musicMenuItem.title = detail

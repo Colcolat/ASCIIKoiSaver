@@ -29,6 +29,7 @@ swiftc \
   -framework CoreText \
   -framework CoreAudio \
   -framework AudioToolbox \
+  -framework Accelerate \
   -framework IOKit \
   -framework ServiceManagement \
   -o "$APP_DIR/Contents/MacOS/ASCIIKoiDesktop" \

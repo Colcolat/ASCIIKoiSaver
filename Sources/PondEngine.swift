@@ -404,6 +404,8 @@ final class PondEngine {
     private var agentsActive: Bool = false
     private var isMusicPlaying: Bool = false
     private var audioBass: CGFloat = 0
+    private var audioSpectrum: [CGFloat] = Array(repeating: 0, count: 24)
+    private var spectrumPeaks: [CGFloat] = Array(repeating: 0, count: 24)
     private var beatEnergy: CGFloat = 0
     private var beatSide: CGFloat = 1.0
     private var beatNod: CGFloat = 0
@@ -463,9 +465,23 @@ final class PondEngine {
         setupFont(size: 10.4)
     }
 
-    func updateAudio(bass: CGFloat, beatHit: CGFloat, playing: Bool) {
+    func updateAudio(bass: CGFloat, beatHit: CGFloat, playing: Bool, spectrum: [CGFloat] = []) {
         isMusicPlaying = playing
         audioBass = bass
+        if config.musicReactive && !spectrum.isEmpty {
+            let n = min(audioSpectrum.count, spectrum.count)
+            for i in 0..<n {
+                audioSpectrum[i] = spectrum[i]
+                if spectrum[i] > spectrumPeaks[i] {
+                    spectrumPeaks[i] = spectrum[i]
+                }
+            }
+        } else {
+            for i in 0..<audioSpectrum.count {
+                audioSpectrum[i] *= 0.85
+                spectrumPeaks[i] *= 0.90
+            }
+        }
         if config.musicReactive && beatHit > 0.1 {
             // Update tempo tracker (BPM inter-beat interval) from real bass hits
             let delta = time - lastRealBeatTime
@@ -1175,8 +1191,11 @@ final class PondEngine {
 
         // Tempo-locked rhythm clock: keeps Koi heads turning Left <-> Right in steady BPM rhythm
         musicNoteCooldown = max(0, musicNoteCooldown - dt)
+        for i in 0..<spectrumPeaks.count {
+            spectrumPeaks[i] = max(audioSpectrum[i], spectrumPeaks[i] - dt * 0.48)
+        }
         if config.musicReactive && isMusicPlaying && (time - lastRealBeatTime) < 2.8 {
-            beatEnergy *= exp(-3.4 * dt) // Punchy, visible bloom-and-fade on each bass hit!
+            beatEnergy *= exp(-4.4 * dt)
             rhythmTimer += dt
             // Slight 22ms predictive lead compensates for CoreAudio + display pipeline latency
             let nextBeatAt = max(0.32, estimatedBeatInterval - 0.022)
@@ -3461,17 +3480,17 @@ final class PondEngine {
             }
         }
 
-        // Vice City Mode: Strong, Smooth Bass-Reactive Neon Screen Border Glow (stays softly lit at rest, surges dramatically on bass!)
+        // Vice City Mode: Smooth Bass-Reactive Neon Screen Border Glow (soft ambient at rest, balanced pulse on bass!)
         if !config.minimalistMode && pal.tod == "vice" && !config.monoMode && cols > 14 && rows > 10 {
-            let energy = min(1.0, beatEnergy * 1.15)
+            let energy = min(1.0, beatEnergy * 0.92)
             let flip = (beatCounter % 2 == 0)
             let colA = flip ? RGB(255, 42, 162) : RGB(0, 245, 255) // Hot Magenta <-> Electric Cyan
             let colB = flip ? RGB(0, 245, 255) : RGB(255, 42, 162)
 
-            // 1. Smooth CoreGraphics neon light wash along all 4 edges (soft ambient at rest -> dramatic surge on every bass hit!)
-            let bandW: CGFloat = (52 + energy * 155) * screenScale()
-            let bandH: CGFloat = (46 + energy * 140) * screenScale()
-            let edgeAlpha: CGFloat = min(0.82, 0.16 + energy * 0.66)
+            // 1. Smooth CoreGraphics neon light wash along all 4 edges (balanced & classy, never harsh!)
+            let bandW: CGFloat = (48 + energy * 92) * screenScale()
+            let bandH: CGFloat = (42 + energy * 82) * screenScale()
+            let edgeAlpha: CGFloat = min(0.54, 0.14 + energy * 0.40)
             let cs = CGColorSpaceCreateDeviceRGB()
 
             func drawEdgeGradient(rect: CGRect, start: CGPoint, end: CGPoint, rgb: RGB) {
@@ -3541,6 +3560,71 @@ final class PondEngine {
                     let gR = colB.g * (1 - frac) + colA.g * frac
                     let bR = colB.b * (1 - frac) + colA.b * frac
                     drawGlyph(ctx, ch, col: cols - 1 - layer, row: r, r: rR, g: gR, b: bR, a: a)
+                }
+            }
+
+            // 3. Vice City Neon Audio Spectrum / Equalizer Bars along the bottom edge (24 real FFT frequency bands!)
+            if config.musicReactive && cols > 48 && rows > 20 {
+                let bands = audioSpectrum.count
+                let marginC = max(6, cols / 14)
+                let usableW = max(24, cols - marginC * 2)
+                let slotW = max(2, usableW / bands)
+                let barW = max(1, slotW - 2)
+                let totalSpan = bands * slotW
+                let startC = (cols - totalSpan) / 2
+                let maxBarRows = min(14, max(6, rows / 6))
+                let baseRow = rows - 2
+
+                for b in 0..<bands {
+                    let level = max(0, min(1, audioSpectrum[b]))
+                    let peak = max(level, min(1, spectrumPeaks[b]))
+                    let barH = Int(round(level * CGFloat(maxBarRows)))
+                    let peakH = Int(round(peak * CGFloat(maxBarRows)))
+                    let bx = startC + b * slotW
+
+                    // Vertical Vice City Neon Gradient: Electric Cyan (bottom) -> Hot Magenta (mid) -> Miami Gold (top!)
+                    if barH > 0 {
+                        for h in 0..<barH {
+                            let row = baseRow - h
+                            guard row >= 4 && row < rows else { continue }
+                            let v = CGFloat(h) / CGFloat(max(1, maxBarRows - 1))
+                            let r: CGFloat, g: CGFloat, bl: CGFloat
+                            if v < 0.52 {
+                                let u = v / 0.52
+                                // Cyan (0, 0.96, 1.0) -> Hot Magenta (1.0, 0.16, 0.64)
+                                r = u * 1.0
+                                g = 0.96 * (1 - u) + 0.16 * u
+                                bl = 1.0 * (1 - u) + 0.64 * u
+                            } else {
+                                let u = (v - 0.52) / 0.48
+                                // Hot Magenta (1.0, 0.16, 0.64) -> Miami Gold (1.0, 0.86, 0.28)
+                                r = 1.0
+                                g = 0.16 * (1 - u) + 0.86 * u
+                                bl = 0.64 * (1 - u) + 0.28 * u
+                            }
+                            let ch: Character = h == barH - 1 ? "=" : (h % 2 == 0 ? "#" : "=")
+                            let alpha = min(0.94, 0.62 + v * 0.34)
+                            for w in 0..<barW {
+                                let col = bx + w
+                                if col >= 0 && col < cols {
+                                    drawGlyph(ctx, ch, col: col, row: row, r: r, g: g, b: bl, a: alpha)
+                                }
+                            }
+                        }
+                    }
+
+                    // Floating golden-pink peak cap that falls gently after each hit
+                    if peakH > barH && peakH > 0 {
+                        let pRow = baseRow - peakH
+                        if pRow >= 4 && pRow < rows {
+                            for w in 0..<barW {
+                                let col = bx + w
+                                if col >= 0 && col < cols {
+                                    drawGlyph(ctx, "~", col: col, row: pRow, r: 1.0, g: 0.88, b: 0.36, a: 0.82)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

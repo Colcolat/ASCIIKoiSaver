@@ -45,7 +45,7 @@ final class DesktopWallpaperManager {
         }
     }
 
-    var audioFrameProvider: (() -> (bass: CGFloat, beatHit: CGFloat, playing: Bool))?
+    var audioFrameProvider: (() -> (bass: CGFloat, beatHit: CGFloat, playing: Bool, spectrum: [CGFloat]))?
 
     var desktopClicksEnabled: Bool = true
     var manuallyPaused: Bool = false {
@@ -297,7 +297,7 @@ final class DesktopWallpaperManager {
         let now = CACurrentMediaTime()
         let dt = lastTimestamp > 0 ? CGFloat(now - lastTimestamp) : CGFloat(1.0 / currentFPS)
         lastTimestamp = now
-        let audio = audioFrameProvider?() ?? (bass: 0, beatHit: 0, playing: false)
+        let audio = audioFrameProvider?() ?? (bass: 0, beatHit: 0, playing: false, spectrum: [])
 
         // Adaptive FPS: ultra-cool Low Power on battery (14–16 FPS), 24 FPS AC idle, 36 FPS AC music
         let desiredFPS: Double
@@ -315,7 +315,7 @@ final class DesktopWallpaperManager {
         }
 
         for v in views {
-            v.engine.updateAudio(bass: audio.bass, beatHit: audio.beatHit, playing: audio.playing)
+            v.engine.updateAudio(bass: audio.bass, beatHit: audio.beatHit, playing: audio.playing, spectrum: audio.spectrum)
             v.engine.step(dt: dt)
             v.needsDisplay = true
         }
