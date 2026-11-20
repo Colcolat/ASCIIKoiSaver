@@ -36,6 +36,7 @@ swiftc \
   "$DESKTOP_DIR/Sources/AgentMonitor.swift" \
   "$DESKTOP_DIR/Sources/TrashMonitor.swift" \
   "$DESKTOP_DIR/Sources/MusicMonitor.swift" \
+  "$DESKTOP_DIR/Sources/NowPlayingMonitor.swift" \
   "$DESKTOP_DIR/Sources/WeatherMonitor.swift" \
   "$DESKTOP_DIR/Sources/DesktopWallpaperManager.swift" \
   "$DESKTOP_DIR/Sources/AppDelegate.swift"

@@ -30,7 +30,7 @@ struct SaverConfig {
     var minimalistMode: Bool = false
     var musicReactive: Bool = true
     var treeBranch: String = "bottomRight" // none | topRight | topLeft | bottomRight | bottomLeft
-    var pondAccent: String = "bridge"      // none | bridge | stones (placed in opposite corner from treeBranch)
+    var viceCityMode: Bool = false         // GTA 6 / Vice City Neon Easter Egg mode
     var cloudDensity: CGFloat = 0.90       // 0.30 (clear) .. 1.45 (overcast), driven by Live Weather
     var isPreview: Bool = false
 }
@@ -329,7 +329,7 @@ private struct Firefly {
 private enum SampleHit {
     case eye(glint: Bool, rim: Bool, depthZ: CGFloat)
     case barbel(u: CGFloat, ang: CGFloat, variety: KoiVariety, depthZ: CGFloat)
-    case body(shade: CGFloat, pigment: Int, isDorsal: Bool, isScaleEdge: Bool, isGill: Bool, depthZ: CGFloat)
+    case body(shade: CGFloat, pigment: Int, isDorsal: Bool, isScaleEdge: Bool, isGill: Bool, isRim: Bool, depthZ: CGFloat)
     case fin(density: CGFloat, dark: Bool, spine: Bool, depthZ: CGFloat)
     case turtleShell(shade: CGFloat, rim: Bool, depthZ: CGFloat)
     case turtleSkin(shade: CGFloat, depthZ: CGFloat)
@@ -446,17 +446,7 @@ final class PondEngine {
     private var branchShadowCells: [(col: Int, row: Int, ch: Character, swayWeight: CGFloat)] = []
     private var branchTipPoints: [CGPoint] = []
     private var branchCacheKey: String = ""
-
-    // Pre-rasterized top-down Zen Garden Accent: Wooden Bridge or Stepping Stones (Tobi-ishi) -> ~0.06ms/frame!
-    private struct AccentCell {
-        let col: Int
-        let row: Int
-        let ch: Character
-        let kind: UInt8 // Bridge: 0=plank dark, 1=plank light, 2=rail, 3=post | Stones: 4=stone dark, 5=stone top, 6=moss
-    }
-    private var accentCells: [AccentCell] = []
-    private var accentShadowCells: [(col: Int, row: Int, ch: Character)] = []
-    private var accentCacheKey: String = ""
+    private var viceCityBlend: CGFloat = 0 // 0 = normal pond, 1 = full Vice City / GTA 6 neon mode
 
     // Visible falling raindrops (lightweight: max ~18 drops -> ~0.02ms/frame!)
     private struct RainDrop {
@@ -654,6 +644,25 @@ final class PondEngine {
 
     private func currentPalette() -> Palette {
         let tod = activeTimeOfDay()
+        if viceCityBlend > 0.45 && !config.monoMode {
+            // GTA 6 / Vice City Neon Twilight Palette
+            return Palette(
+                tod: "vice", bg: RGB(15, 7, 30), waterDeep: RGB(28, 12, 54), stone: RGB(64, 28, 96), clock: RGB(255, 64, 168),
+                water: RGB(0, 232, 255), waterAlpha: 0.28, ripple: RGB(0, 245, 255), shadow: RGB(6, 2, 14), shadowAlpha: 0.72,
+                lotus: RGB(24, 180, 198), lotusVein: RGB(255, 58, 172), flower: RGB(255, 212, 82),
+                white: RGB(242, 248, 255), red: RGB(255, 42, 157), black: RGB(22, 12, 42), gold: RGB(255, 198, 68),
+                fin: RGB(0, 245, 255), finBlack: RGB(255, 48, 168), barbel: RGB(0, 248, 255),
+                turtleShell: RGB(34, 146, 178), turtleRim: RGB(255, 68, 178), turtleSkin: RGB(42, 186, 198),
+                minnow: RGB(0, 244, 255), plant: RGB(38, 134, 152), plantTip: RGB(255, 72, 176),
+                bubble: RGB(120, 248, 255), splash: RGB(255, 192, 238),
+                dragonfly: RGB(255, 64, 182), wing: RGB(0, 245, 255), frog: RGB(0, 224, 188),
+                firefly: RGB(255, 218, 86), moon: RGB(255, 176, 92),
+                leafAutumn: [RGB(255,58,162), RGB(255,178,72), RGB(0,236,255)],
+                leafSpring: [RGB(255,68,176), RGB(0,240,255), RGB(255,198,86)],
+                leafSummer: [RGB(0,224,186), RGB(255,68,172), RGB(0,242,255)],
+                snow: RGB(180, 246, 255), eye: RGB(255, 232, 92)
+            )
+        }
         if config.monoMode {
             return Palette(
                 tod: tod, bg: RGB(8, 11, 16), waterDeep: RGB(16, 22, 32), stone: RGB(44, 52, 66), clock: RGB(54, 66, 82),
@@ -1158,6 +1167,11 @@ final class PondEngine {
     func step(dt rawDt: CGFloat) {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
+
+        // Smooth transition into / out of Vice City Easter Egg mode (~1.3s fade)
+        let vcTarget: CGFloat = config.viceCityMode ? 1.0 : 0.0
+        viceCityBlend += (vcTarget - viceCityBlend) * min(1.0, dt * 2.6)
+        if abs(viceCityBlend - vcTarget) < 0.004 { viceCityBlend = vcTarget }
 
         // Tempo-locked rhythm clock: keeps Koi heads turning Left <-> Right in steady BPM rhythm
         musicNoteCooldown = max(0, musicNoteCooldown - dt)
@@ -2064,7 +2078,8 @@ final class PondEngine {
                     else if abs(lat - (dorsalOffset + 3.0 * s)) < dorsalThick * 0.9 { shade *= 0.78 }
                 }
 
-                return .body(shade: shade, pigment: getPigment(fish, t, normLat), isDorsal: isDorsal, isScaleEdge: isScaleEdge, isGill: isGill, depthZ: fish.z)
+                let isRim = abs(normLat) > 0.68 || t < 0.07 || t > 0.70
+                return .body(shade: shade, pigment: getPigment(fish, t, normLat), isDorsal: isDorsal, isScaleEdge: isScaleEdge, isGill: isGill, isRim: isRim, depthZ: fish.z)
             }
         }
 
@@ -2453,7 +2468,8 @@ final class PondEngine {
     }
 
     private func ensureTreeBranchCache(season actSeason: String) {
-        let key = "\(config.treeBranch)_\(actSeason)_\(cols)x\(rows)"
+        let isVice = viceCityBlend > 0.45
+        let key = "\(config.treeBranch)_\(isVice ? "vicePalm" : actSeason)_\(cols)x\(rows)"
         if branchCacheKey == key { return }
         branchCacheKey = key
         branchCells.removeAll(keepingCapacity: true)
@@ -2495,6 +2511,66 @@ final class PondEngine {
                     branchShadowCells.append((col: sc, row: sr, ch: kind >= 3 ? "·" : ":", swayWeight: sway))
                 }
             }
+        }
+
+        // Vice City Mode: Top-Down Tropical Miami Palm Tree (radiating feathery palm fronds!)
+        if isVice {
+            let crown = toWorld(0.24, 0.24)
+            // Short curved palm trunk emerging from the corner up to the crown
+            for i in 0...22 {
+                let t = CGFloat(i) / 22.0
+                let tx = anchorX + (crown.x - anchorX) * t
+                let ty = anchorY + (crown.y - anchorY) * t
+                let rad = (12.0 - 4.0 * t) * s
+                for dy in stride(from: -rad, through: rad, by: 4.5) {
+                    for dx in stride(from: -rad, through: rad, by: 4.5) {
+                        if dx * dx + dy * dy <= rad * rad {
+                            putCell(px: tx + dx, py: ty + dy, ch: i % 3 == 0 ? "=" : "#", kind: i % 3 == 0 ? 1 : 0, colorIdx: 0, sway: t * 0.25)
+                        }
+                    }
+                }
+            }
+            // 9 radiating top-down tropical palm fronds fanning gracefully across the corner!
+            let frondCount = 9
+            let frondLen = min(spanX, spanY) * 0.88
+            for f in 0..<frondCount {
+                let baseAng = CGFloat(f) * (2.0 * .pi / CGFloat(frondCount)) + 0.18
+                let curveDir: CGFloat = (f % 2 == 0) ? 0.26 : -0.22
+                let lenMult: CGFloat = 0.78 + 0.30 * hash2(CGFloat(f * 7), 3.1)
+                let totalL = frondLen * lenMult
+                let steps = 36
+                for st in 1...steps {
+                    let u = CGFloat(st) / CGFloat(steps)
+                    let ang = baseAng + curveDir * u * u
+                    let fx = crown.x + cos(ang) * totalL * u
+                    let fy = crown.y + sin(ang) * totalL * u
+                    let nx = -sin(ang), ny = cos(ang)
+                    let sway = 0.25 + u * 0.95
+
+                    // Central palm rib
+                    putCell(px: fx, py: fy, ch: "=", kind: 1, colorIdx: f % 3, sway: sway)
+
+                    // Feathery V-shaped palm leaflets on both sides of the rib
+                    let leafSpan = sin(pow(u, 0.65) * .pi) * 26.0 * s
+                    let leafSteps = max(1, Int(leafSpan / 4.8))
+                    for side in [-1.0, 1.0] as [CGFloat] {
+                        for k in 1...leafSteps {
+                            let lf = CGFloat(k) / CGFloat(leafSteps)
+                            let lx = fx + (nx * side * lf * leafSpan) + cos(ang) * (lf * 7.0 * s)
+                            let ly = fy + (ny * side * lf * leafSpan) + sin(ang) * (lf * 7.0 * s)
+                            let isTip = lf > 0.72 || u > 0.78
+                            let ch: Character = isTip ? (lf > 0.85 ? "*" : "~") : (side > 0 ? "/" : "\\")
+                            let kind: UInt8 = isTip ? 4 : (lf > 0.42 ? 3 : 2)
+                            putCell(px: lx, py: ly, ch: ch, kind: kind, colorIdx: f % 3, sway: sway)
+                        }
+                    }
+                    if st == steps {
+                        branchTipPoints.append(CGPoint(x: fx, y: fy))
+                    }
+                }
+            }
+            branchCells = Array(cellMap.values)
+            return
         }
 
         // Helper: rasterize a gnarled organic Bezier wood limb with 3-tone bark shading
@@ -2630,182 +2706,6 @@ final class PondEngine {
         branchCells = Array(cellMap.values)
     }
 
-    /// Pre-rasterizes top-down Zen Garden Accent (Japanese Hinoki Wooden Bridge or Mossy River Stones) ONCE on change (~0.08ms/frame!)
-    private func ensurePondAccentCache() {
-        // Place in opposite bottom corner from treeBranch so it never collides with widgets or the tree!
-        let onLeft = (config.treeBranch != "bottomLeft")
-        let key = "\(config.pondAccent)_\(onLeft ? "L" : "R")_\(cols)x\(rows)"
-        if accentCacheKey == key { return }
-        accentCacheKey = key
-        accentCells.removeAll(keepingCapacity: true)
-        accentShadowCells.removeAll(keepingCapacity: true)
-
-        guard config.pondAccent != "none", cols > 30, rows > 16 else { return }
-        let s = screenScale()
-        var cellMap: [Int: AccentCell] = [:]
-        var shadowSet = Set<Int>()
-
-        // kind legend:
-        // Bridge: 0=dark seam/underwood, 1=weathered plank mid, 2=sunlit plank grain, 3=warm cedar rail, 4=dark bronze post cap
-        // Stones: 5=wet dark rock base, 6=mid river granite, 7=sunlit flat top stone, 8=dark damp moss, 9=bright lush moss
-        func put(px: CGFloat, py: CGFloat, ch: Character, kind: UInt8, shDx: Int, shDy: Int, priority: UInt8? = nil) {
-            let c = Int(px / cellW), r = Int(py / cellH)
-            guard c >= 0 && c < cols && r >= 0 && r < rows else { return }
-            let idx = r * cols + c
-            let prio = priority ?? kind
-            if let ex = cellMap[idx], ex.kind > prio { return }
-            cellMap[idx] = AccentCell(col: c, row: r, ch: ch, kind: kind)
-            if shDx != 0 || shDy != 0 {
-                let sc = c + shDx, sr = r + shDy
-                if sc >= 0 && sc < cols && sr >= 0 && sr < rows {
-                    if shadowSet.insert(sr * cols + sc).inserted {
-                        accentShadowCells.append((col: sc, row: sr, ch: (kind == 3 || kind == 4 || kind >= 6) ? ":" : "·"))
-                    }
-                }
-            }
-        }
-
-        // Helper: organic top-down mossy river stone (works for both big boulders & small surrounding pebbles!)
-        func stampRiverStone(cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat, rot: CGFloat, seed: Int, mossAmt: CGFloat, isPebble: Bool) {
-            let cCos = cos(-rot), cSin = sin(-rot)
-            let minC = max(0, Int(floor((cx - rx - 8) / cellW))), maxC = min(cols - 1, Int(ceil((cx + rx + 8) / cellW)))
-            let minR = max(0, Int(floor((cy - ry - 8) / cellH))), maxR = min(rows - 1, Int(ceil((cy + ry + 8) / cellH)))
-            guard minR <= maxR && minC <= maxC else { return }
-
-            for r in minR...maxR {
-                let dy = (CGFloat(r) + 0.5) * cellH - cy
-                for c in minC...maxC {
-                    let dx = (CGFloat(c) + 0.5) * cellW - cx
-                    let lx = (dx * cCos - dy * cSin) / rx
-                    let ly = (dx * cSin + dy * cCos) / ry
-                    let ang = atan2(ly, lx)
-                    let edge = 1.0 + 0.13 * sin(ang * 3.0 + CGFloat(seed) * 2.1) + 0.07 * cos(ang * 5.0 - CGFloat(seed))
-                    let d = hypot(lx, ly) / edge
-                    if d <= 1.0 {
-                        let h = hash2(CGFloat(c + seed * 19), CGFloat(r + seed * 7))
-                        let nMoss = fbm(CGFloat(c) * 0.24 + CGFloat(seed) * 3.1, CGFloat(r) * 0.24)
-                        // Directional top-down lighting (sunlit upper-left face, damp shaded lower-right rim)
-                        let light = -lx * 0.45 - ly * 0.45 + (1.0 - d) * 0.65
-                        let px = (CGFloat(c) + 0.5) * cellW
-                        let py = (CGFloat(r) + 0.5) * cellH
-
-                        // Lush organic moss creeping across damp edges & crevices (especially on shaded/wet sides!)
-                        let mossZone = (d > 0.42 && nMoss > (0.64 - mossAmt * 0.24)) || (d > 0.68 && ly > -0.1 && nMoss > (0.52 - mossAmt * 0.20))
-                        if !isPebble && mossZone {
-                            let isBrightMoss = light > 0.12 || h > 0.62
-                            let mCh: Character = isBrightMoss ? (h > 0.55 ? "*" : "+") : (h > 0.5 ? "%" : ":")
-                            put(px: px, py: py, ch: mCh, kind: isBrightMoss ? 9 : 8, shDx: 3, shDy: 2)
-                        } else if d > 0.80 {
-                            // Wet dark granite waterline edge
-                            put(px: px, py: py, ch: isPebble ? "o" : (h > 0.5 ? "%" : ":"), kind: 5, shDx: isPebble ? 2 : 3, shDy: isPebble ? 1 : 2)
-                        } else if light > 0.36 && !isPebble {
-                            // Sunlit weathered granite top face
-                            let tCh: Character = h > 0.72 ? "#" : (h > 0.35 ? "=" : ".")
-                            put(px: px, py: py, ch: tCh, kind: 7, shDx: 3, shDy: 2)
-                        } else {
-                            // Mid-tone natural river granite
-                            let mCh: Character = isPebble ? (h > 0.45 ? "o" : ".") : (h > 0.62 ? "#" : (h > 0.25 ? "%" : "+"))
-                            put(px: px, py: py, ch: mCh, kind: 6, shDx: isPebble ? 2 : 3, shDy: isPebble ? 1 : 2)
-                        }
-                    }
-                }
-            }
-        }
-
-        if config.pondAccent == "bridge" {
-            // Authentic Japanese curved cedar/hinoki footbridge spanning the CENTER-MIDDLE of the pond!
-            // Anchored on left & right by natural mossy garden islets so Koi swim cleanly underneath!
-            let p0 = CGPoint(x: width * 0.28, y: height * 0.77)
-            let p1 = CGPoint(x: width * 0.50, y: height * 0.71)
-            let p2 = CGPoint(x: width * 0.72, y: height * 0.77)
-            let halfW: CGFloat = 38 * s
-
-            // 1. Anchor both ends of the central bridge with natural mossy river boulders & small pebbles!
-            let shoreStones: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, Bool)] = [
-                // Left islet anchoring bridgehead
-                (0.265, 0.74, 30, 22,  0.25, false), (0.255, 0.80, 26, 20, -0.22, false),
-                (0.232, 0.77, 16, 12,  0.40, true),  (0.292, 0.82, 13, 10, -0.30, true),
-                (0.286, 0.71, 12,  9,  0.15, true),  (0.245, 0.72, 10,  8,  0.50, true),
-                // Right islet anchoring bridgehead
-                (0.735, 0.74, 30, 22, -0.25, false), (0.745, 0.80, 26, 20,  0.22, false),
-                (0.768, 0.77, 16, 12, -0.40, true),  (0.708, 0.82, 13, 10,  0.30, true),
-                (0.714, 0.71, 12,  9, -0.15, true),  (0.755, 0.72, 10,  8, -0.50, true)
-            ]
-            for (idx, st) in shoreStones.enumerated() {
-                stampRiverStone(cx: width * st.0, cy: height * st.1, rx: st.2 * s, ry: st.3 * s, rot: st.4, seed: 40 + idx, mossAmt: 1.0, isPebble: st.5)
-            }
-
-            // 2. Curved wooden plank deck + warm cedar handrails + dark bronze finial posts!
-            let steps = 60
-            for i in 0...steps {
-                let t = CGFloat(i) / CGFloat(steps)
-                let mt = 1 - t
-                let cx = mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x
-                let cy = mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
-                let tx = 2 * mt * (p1.x - p0.x) + 2 * t * (p2.x - p1.x)
-                let ty = 2 * mt * (p1.y - p0.y) + 2 * t * (p2.y - p1.y)
-                let len = max(0.001, hypot(tx, ty))
-                let nx = -ty / len, ny = tx / len
-
-                let isSeam = (i % 3 == 0)
-                let isPost = (i == 2 || i == 20 || i == 40 || i == 58)
-                let plankIdx = i / 3
-                let plankToneLight = (plankIdx % 2 == 0)
-
-                let widthSamples = 18
-                for k in -widthSamples...widthSamples {
-                    let frac = CGFloat(k) / CGFloat(widthSamples)
-                    let px = cx + nx * frac * halfW
-                    let py = cy + ny * frac * halfW
-                    let absF = abs(frac)
-
-                    if absF > 0.85 {
-                        if isPost {
-                            put(px: px, py: py, ch: "@", kind: 4, shDx: 6, shDy: 4, priority: 12)
-                        } else {
-                            let rCh: Character = absF > 0.92 ? "#" : "="
-                            put(px: px, py: py, ch: rCh, kind: 3, shDx: 6, shDy: 4, priority: 11)
-                        }
-                    } else {
-                        let grain = hash2(CGFloat(plankIdx * 13 + k), CGFloat(i))
-                        if isSeam {
-                            put(px: px, py: py, ch: "-", kind: 0, shDx: 5, shDy: 3, priority: 10)
-                        } else {
-                            let isBright = plankToneLight && (grain > 0.35 || absF < 0.35)
-                            let pCh: Character = isBright ? (grain > 0.7 ? "#" : "=") : (grain > 0.65 ? "%" : "=")
-                            put(px: px, py: py, ch: pCh, kind: isBright ? 2 : 1, shDx: 5, shDy: 3, priority: 10)
-                        }
-                    }
-                }
-            }
-        } else if config.pondAccent == "stones" {
-            // 5 authentic Japanese mossy stepping stones (Tobi-ishi) curving across the CENTER-MIDDLE of the pond!
-            let bigStones: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
-                (0.30, 0.78, 36, 25,  0.18),
-                (0.40, 0.75, 32, 23, -0.22),
-                (0.50, 0.73, 40, 27,  0.12),
-                (0.60, 0.76, 33, 24, -0.18),
-                (0.70, 0.79, 36, 25,  0.24)
-            ]
-            // 14 smaller natural river pebbles clustered organically around the stepping stones
-            let pebbles: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
-                (0.26, 0.76, 13, 10,  0.4), (0.33, 0.82, 11, 8, -0.3), (0.35, 0.73, 12, 9,  0.2),
-                (0.43, 0.79, 13,  9,  0.5), (0.45, 0.71, 11, 8, -0.4), (0.48, 0.78, 10, 7,  0.1),
-                (0.54, 0.70, 12,  9, -0.2), (0.56, 0.78, 14, 10, 0.3), (0.63, 0.72, 11, 8, -0.5),
-                (0.65, 0.80, 12,  9,  0.2), (0.74, 0.77, 13, 10,-0.1), (0.72, 0.83, 10, 8,  0.6),
-                (0.28, 0.82, 10,  7, -0.3), (0.51, 0.79, 11, 8,  0.4)
-            ]
-            for (idx, pb) in pebbles.enumerated() {
-                stampRiverStone(cx: width * pb.0, cy: height * pb.1, rx: pb.2 * s, ry: pb.3 * s, rot: pb.4, seed: 100 + idx, mossAmt: 0.65, isPebble: true)
-            }
-            for (idx, sp) in bigStones.enumerated() {
-                stampRiverStone(cx: width * sp.0, cy: height * sp.1, rx: sp.2 * s, ry: sp.3 * s, rot: sp.4, seed: 10 + idx, mossAmt: 1.0, isPebble: false)
-            }
-        }
-
-        accentCells = Array(cellMap.values)
-    }
-
     private func flushGlyphBatches(in ctx: CGContext) {
         for key in batchKeys {
             guard let glyphs = batchGlyphs[key], let positions = batchPositions[key], !glyphs.isEmpty else { continue }
@@ -2855,13 +2755,17 @@ final class PondEngine {
         let cal = Calendar.current
         let timeChars = Array(String(format: "%02d:%02d", cal.component(.hour, from: now), cal.component(.minute, from: now)))
 
-        // Precompute lotus pad frame positions once per frame (instead of sin/cos per cell!)
+        // Precompute lotus pad frame positions once per frame (sink & vanish smoothly in Vice City mode!)
         lotusFrameCache.removeAll(keepingCapacity: true)
         if !config.minimalistMode {
-            for lp in lotusPads {
-                let ox = sin(time * 0.55 + lp.phase) * 2.5
-                let oy = cos(time * 0.45 + lp.phase) * 2.0
-                lotusFrameCache.append((lp.x + ox, lp.y + oy, lp.r, lp.r * lp.r, lp.notchAngle, lp.flower))
+            let lotusScale = max(0, 1.0 - viceCityBlend * 1.18)
+            if lotusScale > 0.04 {
+                for lp in lotusPads {
+                    let ox = sin(time * 0.55 + lp.phase) * 2.5
+                    let oy = cos(time * 0.45 + lp.phase) * 2.0
+                    let sr = lp.r * lotusScale
+                    lotusFrameCache.append((lp.x + ox, lp.y + oy, sr, sr * sr, lp.notchAngle, lp.flower))
+                }
             }
         }
 
@@ -3068,27 +2972,40 @@ final class PondEngine {
                             else { ch = "/" }
                         }
                         drawDepthGlyph(ctx, ch, col: c, row: r, rgb: variety == .ogon ? pal.gold : pal.barbel, z: depthZ, pal: pal, mult: 1.02, alpha: max(0.42, 0.96 - u * 0.48))
-                    case .body(let shade, let pigment, let isDorsal, let isScaleEdge, let isGill, let depthZ):
+                    case .body(let shade, let pigment, let isDorsal, let isScaleEdge, let isGill, let isRim, let depthZ):
                         dz = depthZ
                         let ramp = isScaleEdge ? scaleRamp : shadeRamp
                         let idx = max(1, min(ramp.count - 1, Int(shade * CGFloat(ramp.count - 1))))
                         var ch = ramp[idx]
                         if isDorsal { ch = idx > 10 ? "W" : "+" }
                         else if isGill { ch = "(" }
-                        let baseRgb: RGB
-                        var boost = 0.45 + shade * 0.65
-                        switch pigment {
-                        case 1: baseRgb = pal.red; boost = 0.50 + shade * 0.62
-                        case 2: baseRgb = pal.black; boost = 0.70 + shade * 1.50; ch = shade > 0.80 ? "#" : (isScaleEdge ? ":" : "%")
-                        case 3: baseRgb = pal.gold; boost = 0.50 + shade * 0.68
-                        case 4: baseRgb = config.monoMode ? pal.white : RGB(66, 146, 255); boost = 0.58 + shade * 0.68
-                        case 5: baseRgb = config.monoMode ? pal.fin : RGB(154, 108, 255); boost = 0.58 + shade * 0.68
-                        case 6: baseRgb = config.monoMode ? pal.white : RGB(115, 246, 255); boost = 0.85 + shade * 0.45; ch = "*"
-                        case 7: baseRgb = config.monoMode ? pal.red : RGB(224, 118, 76); boost = 0.55 + shade * 0.65
-                        case 8: baseRgb = config.monoMode ? pal.white : RGB(248, 232, 208); boost = 0.52 + shade * 0.62
-                        default: baseRgb = pal.white
+                        if pal.tod == "vice" && !config.monoMode {
+                            // Vice City Neon Koi: sleek dark midnight body with ELECTRIC NEON GLOWING EDGES!
+                            let rimColor: RGB = (pigment == 1 || pigment == 7) ? RGB(255, 42, 162) : (pigment == 3 ? RGB(255, 206, 68) : RGB(0, 248, 255))
+                            if isRim || isDorsal {
+                                let glowCh: Character = isDorsal ? "*" : (shade > 0.55 ? "#" : "+")
+                                drawGlyph(ctx, glowCh, col: c, row: r, r: rimColor.r, g: rimColor.g, b: rimColor.b, a: 0.98)
+                            } else {
+                                let coreRgb = RGB(36, 18, 68)
+                                let tint = 0.55 + shade * 0.55
+                                drawDepthGlyph(ctx, isScaleEdge ? ":" : ch, col: c, row: r, rgb: coreRgb, z: depthZ, pal: pal, mult: tint)
+                            }
+                        } else {
+                            let baseRgb: RGB
+                            var boost = 0.45 + shade * 0.65
+                            switch pigment {
+                            case 1: baseRgb = pal.red; boost = 0.50 + shade * 0.62
+                            case 2: baseRgb = pal.black; boost = 0.70 + shade * 1.50; ch = shade > 0.80 ? "#" : (isScaleEdge ? ":" : "%")
+                            case 3: baseRgb = pal.gold; boost = 0.50 + shade * 0.68
+                            case 4: baseRgb = config.monoMode ? pal.white : RGB(66, 146, 255); boost = 0.58 + shade * 0.68
+                            case 5: baseRgb = config.monoMode ? pal.fin : RGB(154, 108, 255); boost = 0.58 + shade * 0.68
+                            case 6: baseRgb = config.monoMode ? pal.white : RGB(115, 246, 255); boost = 0.85 + shade * 0.45; ch = "*"
+                            case 7: baseRgb = config.monoMode ? pal.red : RGB(224, 118, 76); boost = 0.55 + shade * 0.65
+                            case 8: baseRgb = config.monoMode ? pal.white : RGB(248, 232, 208); boost = 0.52 + shade * 0.62
+                            default: baseRgb = pal.white
+                            }
+                            drawDepthGlyph(ctx, ch, col: c, row: r, rgb: baseRgb, z: depthZ, pal: pal, mult: boost)
                         }
-                        drawDepthGlyph(ctx, ch, col: c, row: r, rgb: baseRgb, z: depthZ, pal: pal, mult: boost)
                     case .fin(let density, let dark, let spine, let depthZ):
                         dz = depthZ
                         let idx = max(1, min(finRamp.count - 1, Int(density * CGFloat(finRamp.count))))
@@ -3140,9 +3057,15 @@ final class PondEngine {
                     continue
                 }
 
-                // 4. Ripples
+                // 4. Ripples (alternating electric cyan & hot magenta in Vice City mode!)
                 if let rCh = rippleCh {
-                    drawGlyph(ctx, rCh, col: c, row: r, r: pal.ripple.r, g: pal.ripple.g, b: pal.ripple.b, a: rippleAlpha)
+                    if pal.tod == "vice" && !config.monoMode {
+                        let usePink = ((c + r + beatCounter) & 1) == 0 && beatEnergy > 0.22
+                        let rc = usePink ? RGB(255, 48, 172) : pal.ripple
+                        drawGlyph(ctx, rCh, col: c, row: r, r: rc.r, g: rc.g, b: rc.b, a: rippleAlpha)
+                    } else {
+                        drawGlyph(ctx, rCh, col: c, row: r, r: pal.ripple.r, g: pal.ripple.g, b: pal.ripple.b, a: rippleAlpha)
+                    }
                     continue
                 }
 
@@ -3152,20 +3075,58 @@ final class PondEngine {
                     continue
                 }
 
-                // 6. Submerged stone clock (clearer, luminous carved look)
+                // 6. Submerged stone clock (Vice City neon pink -> electric cyan gradient in GTA 6 mode!)
                 if inClockRow && c >= clockStartC && c < clockEndC && isClockCell(c, r, timeChars) {
-                    let shimmer = 1.65 + 0.35 * sin(CGFloat(c) * 0.18 + time * 1.1)
-                    drawGlyph(ctx, "#", col: c, row: r, r: min(1, pal.clock.r * shimmer), g: min(1, pal.clock.g * shimmer), b: min(1, pal.clock.b * shimmer), a: 0.88)
+                    if pal.tod == "vice" && !config.monoMode {
+                        let vFrac = CGFloat(r - clockStartR) / max(1, CGFloat(clockTotalH - 1))
+                        let pulse = 0.92 + 0.18 * beatEnergy + 0.08 * sin(CGFloat(c) * 0.22 + time * 2.2)
+                        let cr = (1.0 - vFrac) * 1.0 + vFrac * 0.04
+                        let cg = (1.0 - vFrac) * 0.20 + vFrac * 0.95
+                        let cb = (1.0 - vFrac) * 0.66 + vFrac * 1.0
+                        drawGlyph(ctx, "#", col: c, row: r, r: min(1, cr * pulse), g: min(1, cg * pulse), b: min(1, cb * pulse), a: 0.94)
+                    } else {
+                        let shimmer = 1.65 + 0.35 * sin(CGFloat(c) * 0.18 + time * 1.1)
+                        drawGlyph(ctx, "#", col: c, row: r, r: min(1, pal.clock.r * shimmer), g: min(1, pal.clock.g * shimmer), b: min(1, pal.clock.b * shimmer), a: 0.88)
+                    }
                     continue
                 }
 
                 if config.minimalistMode { continue }
 
-                // 7. Sun / Moon reflection & stones & caustics
+                // 7. Sun / Moon / Vice City Retro Synthwave Sun reflection & stones & caustics
                 let wave = sin(CGFloat(c) * 0.14 + time * 0.75 + rowWaveSin) *
                            cos(rowWaveCosBase + CGFloat(c) * 0.05)
 
-                if pal.tod == "night" {
+                if pal.tod == "vice" {
+                    // Iconic Vice City Retro Synthwave Sun reflected on the upper pond water!
+                    let sunX = width * 0.50, sunY = height * 0.23
+                    let sdx = (px - sunX) * 0.78, sdy = (py - sunY) * 1.05
+                    if abs(sdx) < 110 && abs(sdy) < 160 {
+                        let sd = hypot(sdx, sdy)
+                        if sd < 76 + wave * 6 {
+                            // Vertical synthwave gradient: Electric Gold -> Miami Coral -> Hot Magenta
+                            let v = max(0, min(1, (sdy + 76) / 152))
+                            // Iconic horizontal synthwave scanline cutouts across the lower half!
+                            let scanBand = (r % 3 == 0) && v > 0.48
+                            if !scanBand {
+                                let sr: CGFloat = 1.0
+                                let sg: CGFloat = max(0.14, 0.92 - v * 0.78)
+                                let sb: CGFloat = min(0.75, 0.18 + v * 0.54)
+                                let sCh: Character = v < 0.35 ? "=" : (v < 0.70 ? "#" : "~")
+                                let sAlpha = min(0.88, (1.0 - sd / 92) * 0.95 + 0.12)
+                                drawGlyph(ctx, sCh, col: c, row: r, r: sr, g: sg, b: sb, a: sAlpha)
+                                continue
+                            }
+                        } else if sdy > 58 && sdy < 155 && abs(sdx) < (66 - (sdy - 58) * 0.42) + wave * 14 {
+                            // Shimmering neon coral-magenta reflection bars on the water below the retro sun
+                            if wave > 0.10 {
+                                let trailA = max(0, (1.0 - (sdy - 58) / 100.0)) * 0.62
+                                drawGlyph(ctx, wave > 0.52 ? "=" : "~", col: c, row: r, r: 1.0, g: 0.26, b: 0.64, a: trailA)
+                                continue
+                            }
+                        }
+                    }
+                } else if pal.tod == "night" {
                     // Luminous silver-cyan Moon reflection + shimmering vertical water trail
                     let mdx = (px - moonX) * 0.85, mdy = (py - moonY) * 1.05
                     if abs(mdx) < 76 && abs(mdy) < 115 {
@@ -3439,48 +3400,35 @@ final class PondEngine {
             }
         }
 
-        // Pre-rasterized top-down Zen Garden Accent (Japanese Hinoki Bridge or Mossy River Stones — Koi swim underneath!)
-        if !config.minimalistMode && config.pondAccent != "none" {
-            ensurePondAccentCache()
-            // Natural weathered cedar/hinoki wood & river granite palette inspired by Kyoto garden ponds
-            let woodSeam   = config.monoMode ? pal.shadow : RGB(56, 40, 30)
-            let woodMid    = config.monoMode ? pal.stone  : RGB(126, 94, 68)
-            let woodSun    = config.monoMode ? pal.ripple : RGB(168, 128, 92)
-            let cedarRail  = config.monoMode ? pal.white  : RGB(182, 124, 74) // Warm natural hinoki handrail
-            let bronzePost = config.monoMode ? pal.shadow : RGB(46, 38, 34)   // Dark bronze finial cap
-            let stoneWet   = config.monoMode ? pal.shadow : RGB(68, 76, 74)
-            let stoneMid   = config.monoMode ? pal.stone  : RGB(114, 122, 118)
-            let stoneTop   = config.monoMode ? pal.ripple : RGB(158, 166, 158)
-            let mossDark   = config.monoMode ? pal.lotus  : RGB(66, 116, 62)
-            let mossBright = config.monoMode ? pal.lotusVein : RGB(118, 174, 86)
-
-            for sh in accentShadowCells {
-                drawGlyph(ctx, sh.ch, col: sh.col, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.86)
-            }
-            for ac in accentCells {
-                switch ac.kind {
-                case 0: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodSeam.r,   g: woodSeam.g,   b: woodSeam.b,   a: 0.96)
-                case 1: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodMid.r,    g: woodMid.g,    b: woodMid.b,    a: 0.97)
-                case 2: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: woodSun.r,    g: woodSun.g,    b: woodSun.b,    a: 0.98)
-                case 3: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: cedarRail.r,  g: cedarRail.g,  b: cedarRail.b,  a: 0.99)
-                case 4: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: bronzePost.r, g: bronzePost.g, b: bronzePost.b, a: 0.99)
-                case 5: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneWet.r,   g: stoneWet.g,   b: stoneWet.b,   a: 0.95)
-                case 6: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneMid.r,   g: stoneMid.g,   b: stoneMid.b,   a: 0.96)
-                case 7: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: stoneTop.r,   g: stoneTop.g,   b: stoneTop.b,   a: 0.98)
-                case 8: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: mossDark.r,   g: mossDark.g,   b: mossDark.b,   a: 0.96)
-                default: drawGlyph(ctx, ac.ch, col: ac.col, row: ac.row, r: mossBright.r, g: mossBright.g, b: mossBright.b, a: 0.98)
+        // Vice City Mode: Neon Equalizer Pulse Rings replacing the sunken lily pads!
+        if !config.minimalistMode && pal.tod == "vice" && !config.monoMode {
+            for (idx, lp) in lotusPads.enumerated() {
+                let ox = sin(time * 0.55 + lp.phase) * 2.5
+                let oy = cos(time * 0.45 + lp.phase) * 2.0
+                let ringR = (14 + beatEnergy * 18) * screenScale()
+                let isPink = (idx % 2 == 0)
+                let rgb = isPink ? RGB(255, 48, 172) : RGB(0, 245, 255)
+                let steps = 16
+                for s in 0..<steps {
+                    let ang = CGFloat(s) * (2.0 * .pi / CGFloat(steps)) + time * 0.45
+                    let rc = Int((lp.x + ox + cos(ang) * ringR) / cellW)
+                    let rr = Int((lp.y + oy + sin(ang) * ringR) / cellH)
+                    if rc >= 0 && rc < cols && rr >= 0 && rr < rows {
+                        drawGlyph(ctx, s % 2 == 0 ? "~" : "·", col: rc, row: rr, r: rgb.r, g: rgb.g, b: rgb.b, a: 0.42 + beatEnergy * 0.45)
+                    }
                 }
             }
         }
 
-        // Overhanging corner tree branch + soft cast shadow (pre-rasterized -> ~0.1ms/frame!)
+        // Overhanging corner tree branch OR Musical Vice City Palm Tree (pre-rasterized -> ~0.1ms/frame!)
         if !config.minimalistMode && config.treeBranch != "none" {
             ensureTreeBranchCache(season: actSeason)
-            let breeze = sin(time * 0.85) * 1.15
-            let barkDark = config.monoMode ? pal.stone : RGB(78, 56, 44)
-            let barkLight = config.monoMode ? pal.ripple : RGB(118, 86, 66)
+            let musicSway: CGFloat = (pal.tod == "vice" && config.musicReactive) ? (beatNod * 1.9) : 0
+            let breeze = sin(time * 0.85) * 1.15 + musicSway
+            let barkDark = config.monoMode ? pal.stone : (pal.tod == "vice" ? RGB(68, 30, 82) : RGB(78, 56, 44))
+            let barkLight = config.monoMode ? pal.ripple : (pal.tod == "vice" ? RGB(132, 58, 128) : RGB(118, 86, 66))
             let branchPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
-            let isWinter = actSeason == "winter"
+            let isWinter = actSeason == "winter" && pal.tod != "vice"
 
             // 1. Cast shadow on pond water below
             for sh in branchShadowCells {
@@ -3489,24 +3437,25 @@ final class PondEngine {
                     drawGlyph(ctx, sh.ch, col: sc, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.82)
                 }
             }
-            // 2. Branch wood & 3-tier top-down foliage/blossom canopy
+            // 2. Branch wood & 3-tier top-down foliage/palm canopy
             for bc in branchCells {
                 let cc = bc.col + Int(round(breeze * bc.swayWeight))
                 guard cc >= 0 && cc < cols else { continue }
                 switch bc.kind {
                 case 0: // Deep bark
                     drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkDark.r, g: barkDark.g, b: barkDark.b, a: 0.96)
-                case 1: // Top-ridge sunlit bark
+                case 1: // Top-ridge sunlit bark / palm rib
                     drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkLight.r, g: barkLight.g, b: barkLight.b, a: 0.96)
-                case 2: // Lower shaded under-canopy (creates 3D top-down depth!)
-                    let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.56, g: rgb.g * 0.56, b: rgb.b * 0.56, a: 0.92)
-                case 3: // Mid-crown foliage
-                    let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.88, g: rgb.g * 0.88, b: rgb.b * 0.88, a: 0.95)
-                default: // Upper sunlit crown tips & blossoms
-                    let rgb = isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count]
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * 1.22), g: min(1, rgb.g * 1.22), b: min(1, rgb.b * 1.22), a: 0.99)
+                case 2: // Lower shaded under-canopy
+                    let rgb = pal.tod == "vice" ? RGB(16, 132, 138) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * (pal.tod == "vice" ? 0.82 : 0.56), g: rgb.g * (pal.tod == "vice" ? 0.82 : 0.56), b: rgb.b * (pal.tod == "vice" ? 0.82 : 0.56), a: 0.92)
+                case 3: // Mid-crown foliage / neon palm leaflets
+                    let rgb = pal.tod == "vice" ? RGB(0, 226, 198) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.92, g: rgb.g * 0.92, b: rgb.b * 0.92, a: 0.96)
+                default: // Upper sunlit crown tips / Vice City neon magenta palm tips!
+                    let rgb = pal.tod == "vice" ? RGB(255, 58, 176) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
+                    let boost: CGFloat = pal.tod == "vice" ? (1.0 + beatEnergy * 0.28) : 1.22
+                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * boost), g: min(1, rgb.g * boost), b: min(1, rgb.b * boost), a: 0.99)
                 }
             }
         }

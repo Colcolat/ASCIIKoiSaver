@@ -9,6 +9,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     private let agentMonitor = AgentMonitor()
     private let trashMonitor = TrashMonitor()
     private let musicMonitor = MusicMonitor()
+    private let nowPlayingMonitor = NowPlayingMonitor()
     private let weatherMonitor = WeatherMonitor()
 
     private var statusMenuItem: NSMenuItem!
@@ -16,11 +17,14 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     private var musicMenuItem: NSMenuItem!
     private var weatherMenuItem: NSMenuItem!
     private var rainMenuItem: NSMenuItem!
+    private var vicePreviewMenuItem: NSMenuItem!
     private var feedTrashMenuItem: NSMenuItem!
     private var pauseMenuItem: NSMenuItem!
 
     private var config = SaverConfig()
     private var liveWeatherEnabled: Bool = true
+    private var manualViceCityPreview: Bool = false
+    private var songTriggersViceCity: Bool = false
 
     static func main() {
         let app = NSApplication.shared
@@ -100,6 +104,21 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
             musicMenuItem.title = "Music: Off"
         }
 
+        nowPlayingMonitor.onTrackChanged = { [weak self] track in
+            guard let self = self else { return }
+            self.songTriggersViceCity = track.isGTA6
+            self.syncViceCityState()
+            if track.isGTA6 {
+                let label = track.title.isEmpty ? "GTA VI" : track.title
+                self.musicMenuItem.title = "Music: 🌴 Vice City · \(label)"
+            } else if track.isPlaying && !track.title.isEmpty {
+                self.musicMenuItem.title = "Music: ♪ \(track.title)"
+            } else if self.config.musicReactive {
+                self.musicMenuItem.title = "Music: Real-Time Beat Sync ♪"
+            }
+        }
+        nowPlayingMonitor.start()
+
         weatherMonitor.onWeatherUpdated = { [weak self] st in
             guard let self = self else { return }
             self.weatherMenuItem.title = st.summary
@@ -118,6 +137,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        nowPlayingMonitor.stop()
         weatherMonitor.stop()
         musicMonitor.stop()
         agentMonitor.stop()
@@ -139,7 +159,6 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         config.minimalistMode = d.bool(forKey: "minimalistMode")
         config.musicReactive = d.object(forKey: "musicReactive") == nil ? true : d.bool(forKey: "musicReactive")
         config.treeBranch = d.string(forKey: "treeBranch") ?? "bottomRight"
-        config.pondAccent = d.string(forKey: "pondAccent") ?? "bridge"
         liveWeatherEnabled = d.object(forKey: "liveWeather") == nil ? true : d.bool(forKey: "liveWeather")
         wallpaper.autoLowPowerOnBattery = d.object(forKey: "autoLowPower") == nil ? true : d.bool(forKey: "autoLowPower")
         wallpaper.desktopClicksEnabled = d.object(forKey: "desktopClicks") == nil ? true : d.bool(forKey: "desktopClicks")
@@ -156,7 +175,6 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         d.set(config.minimalistMode, forKey: "minimalistMode")
         d.set(config.musicReactive, forKey: "musicReactive")
         d.set(config.treeBranch, forKey: "treeBranch")
-        d.set(config.pondAccent, forKey: "pondAccent")
         d.set(liveWeatherEnabled, forKey: "liveWeather")
         d.set(wallpaper.autoLowPowerOnBattery, forKey: "autoLowPower")
         d.set(wallpaper.desktopClicksEnabled, forKey: "desktopClicks")
@@ -280,23 +298,6 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         branchItem.submenu = branchSub
         menu.addItem(branchItem)
 
-        // Zen Garden Accent Submenu (Wooden Bridge vs Stepping Stones)
-        let accentSub = NSMenu()
-        for (title, val) in [
-            ("Off", "none"),
-            ("Wooden Bridge", "bridge"),
-            ("Stepping Stones (Tobi-ishi)", "stones")
-        ] {
-            let item = NSMenuItem(title: title, action: #selector(selectPondAccent(_:)), keyEquivalent: "")
-            item.representedObject = val
-            item.state = (config.pondAccent == val) ? .on : .off
-            item.target = self
-            accentSub.addItem(item)
-        }
-        let accentItem = NSMenuItem(title: "Zen Garden Accent", action: nil, keyEquivalent: "")
-        accentItem.submenu = accentSub
-        menu.addItem(accentItem)
-
         menu.addItem(.separator())
 
         // Toggles
@@ -310,6 +311,7 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         }
         addToggle("Minimalist Mode (Transparent over Wallpaper)", isOn: config.minimalistMode, action: #selector(toggleMinimalist(_:)))
         addToggle("Music Reactive ♪", isOn: config.musicReactive, action: #selector(toggleMusicReactive(_:)))
+        vicePreviewMenuItem = addToggle("Preview Vice City Mode 🌴 (GTA VI)", isOn: manualViceCityPreview, action: #selector(toggleViceCityPreview(_:)))
         addToggle("Live Weather Sync (Auto Rain & Clouds)", isOn: liveWeatherEnabled, action: #selector(toggleLiveWeather(_:)))
         addToggle("Auto Low Power on Battery (14–16 FPS)", isOn: wallpaper.autoLowPowerOnBattery, action: #selector(toggleAutoLowPower(_:)))
         addToggle("Submerged Stone Clock", isOn: config.showClock, action: #selector(toggleClock(_:)))
@@ -402,11 +404,18 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
         savePreferences()
     }
 
-    @objc private func selectPondAccent(_ sender: NSMenuItem) {
-        guard let val = sender.representedObject as? String else { return }
-        config.pondAccent = val
-        sender.menu?.items.forEach { $0.state = ($0 == sender) ? .on : .off }
-        savePreferences()
+    private func syncViceCityState() {
+        let shouldEnable = manualViceCityPreview || songTriggersViceCity
+        if config.viceCityMode != shouldEnable {
+            config.viceCityMode = shouldEnable
+            wallpaper.config = config
+        }
+    }
+
+    @objc private func toggleViceCityPreview(_ sender: NSMenuItem) {
+        manualViceCityPreview.toggle()
+        sender.state = manualViceCityPreview ? .on : .off
+        syncViceCityState()
     }
 
     @objc private func toggleLaunchAtLogin(_ sender: NSMenuItem) {
