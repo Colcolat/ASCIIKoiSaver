@@ -44,6 +44,13 @@ struct RGB {
         self.g = g / 255.0
         self.b = b / 255.0
     }
+    init(unitR r: CGFloat, g: CGFloat, b: CGFloat) {
+        self.r = r; self.g = g; self.b = b
+    }
+    @inline(__always)
+    func lerp(to other: RGB, t: CGFloat) -> RGB {
+        RGB(unitR: r + (other.r - r) * t, g: g + (other.g - g) * t, b: b + (other.b - b) * t)
+    }
 }
 
 private struct Palette {
@@ -658,27 +665,73 @@ final class PondEngine {
         }
     }
 
+    private func viceCityPalette() -> Palette {
+        Palette(
+            tod: "vice", bg: RGB(15, 7, 30), waterDeep: RGB(28, 12, 54), stone: RGB(64, 28, 96), clock: RGB(255, 64, 168),
+            water: RGB(0, 232, 255), waterAlpha: 0.28, ripple: RGB(0, 245, 255), shadow: RGB(6, 2, 14), shadowAlpha: 0.72,
+            lotus: RGB(24, 180, 198), lotusVein: RGB(255, 58, 172), flower: RGB(255, 212, 82),
+            white: RGB(242, 248, 255), red: RGB(255, 42, 157), black: RGB(22, 12, 42), gold: RGB(255, 198, 68),
+            fin: RGB(0, 245, 255), finBlack: RGB(255, 48, 168), barbel: RGB(0, 248, 255),
+            turtleShell: RGB(34, 146, 178), turtleRim: RGB(255, 68, 178), turtleSkin: RGB(42, 186, 198),
+            minnow: RGB(0, 244, 255), plant: RGB(38, 134, 152), plantTip: RGB(255, 72, 176),
+            bubble: RGB(120, 248, 255), splash: RGB(255, 192, 238),
+            dragonfly: RGB(255, 64, 182), wing: RGB(0, 245, 255), frog: RGB(0, 224, 188),
+            firefly: RGB(255, 218, 86), moon: RGB(255, 176, 92),
+            leafAutumn: [RGB(255,58,162), RGB(255,178,72), RGB(0,236,255)],
+            leafSpring: [RGB(255,68,176), RGB(0,240,255), RGB(255,198,86)],
+            leafSummer: [RGB(0,224,186), RGB(255,68,172), RGB(0,242,255)],
+            snow: RGB(180, 246, 255), eye: RGB(255, 232, 92)
+        )
+    }
+
     private func currentPalette() -> Palette {
+        let base = basePalette()
+        if viceCityBlend <= 0.005 || config.monoMode { return base }
+        let v = viceCityPalette()
+        if viceCityBlend >= 0.995 { return v }
+        let t = viceCityBlend
+        return Palette(
+            tod: t > 0.5 ? "vice" : base.tod,
+            bg: base.bg.lerp(to: v.bg, t: t),
+            waterDeep: base.waterDeep.lerp(to: v.waterDeep, t: t),
+            stone: base.stone.lerp(to: v.stone, t: t),
+            clock: base.clock.lerp(to: v.clock, t: t),
+            water: base.water.lerp(to: v.water, t: t),
+            waterAlpha: base.waterAlpha + (v.waterAlpha - base.waterAlpha) * t,
+            ripple: base.ripple.lerp(to: v.ripple, t: t),
+            shadow: base.shadow.lerp(to: v.shadow, t: t),
+            shadowAlpha: base.shadowAlpha + (v.shadowAlpha - base.shadowAlpha) * t,
+            lotus: base.lotus.lerp(to: v.lotus, t: t),
+            lotusVein: base.lotusVein.lerp(to: v.lotusVein, t: t),
+            flower: base.flower.lerp(to: v.flower, t: t),
+            white: base.white.lerp(to: v.white, t: t),
+            red: base.red.lerp(to: v.red, t: t),
+            black: base.black.lerp(to: v.black, t: t),
+            gold: base.gold.lerp(to: v.gold, t: t),
+            fin: base.fin.lerp(to: v.fin, t: t),
+            finBlack: base.finBlack.lerp(to: v.finBlack, t: t),
+            barbel: base.barbel.lerp(to: v.barbel, t: t),
+            turtleShell: base.turtleShell.lerp(to: v.turtleShell, t: t),
+            turtleRim: base.turtleRim.lerp(to: v.turtleRim, t: t),
+            turtleSkin: base.turtleSkin.lerp(to: v.turtleSkin, t: t),
+            minnow: base.minnow.lerp(to: v.minnow, t: t),
+            plant: base.plant.lerp(to: v.plant, t: t),
+            plantTip: base.plantTip.lerp(to: v.plantTip, t: t),
+            bubble: base.bubble.lerp(to: v.bubble, t: t),
+            splash: base.splash.lerp(to: v.splash, t: t),
+            dragonfly: base.dragonfly.lerp(to: v.dragonfly, t: t),
+            wing: base.wing.lerp(to: v.wing, t: t),
+            frog: base.frog.lerp(to: v.frog, t: t),
+            firefly: base.firefly.lerp(to: v.firefly, t: t),
+            moon: base.moon.lerp(to: v.moon, t: t),
+            leafAutumn: base.leafAutumn, leafSpring: base.leafSpring, leafSummer: base.leafSummer,
+            snow: base.snow.lerp(to: v.snow, t: t),
+            eye: base.eye.lerp(to: v.eye, t: t)
+        )
+    }
+
+    private func basePalette() -> Palette {
         let tod = activeTimeOfDay()
-        if viceCityBlend > 0.45 && !config.monoMode {
-            // GTA 6 / Vice City Neon Twilight Palette
-            return Palette(
-                tod: "vice", bg: RGB(15, 7, 30), waterDeep: RGB(28, 12, 54), stone: RGB(64, 28, 96), clock: RGB(255, 64, 168),
-                water: RGB(0, 232, 255), waterAlpha: 0.28, ripple: RGB(0, 245, 255), shadow: RGB(6, 2, 14), shadowAlpha: 0.72,
-                lotus: RGB(24, 180, 198), lotusVein: RGB(255, 58, 172), flower: RGB(255, 212, 82),
-                white: RGB(242, 248, 255), red: RGB(255, 42, 157), black: RGB(22, 12, 42), gold: RGB(255, 198, 68),
-                fin: RGB(0, 245, 255), finBlack: RGB(255, 48, 168), barbel: RGB(0, 248, 255),
-                turtleShell: RGB(34, 146, 178), turtleRim: RGB(255, 68, 178), turtleSkin: RGB(42, 186, 198),
-                minnow: RGB(0, 244, 255), plant: RGB(38, 134, 152), plantTip: RGB(255, 72, 176),
-                bubble: RGB(120, 248, 255), splash: RGB(255, 192, 238),
-                dragonfly: RGB(255, 64, 182), wing: RGB(0, 245, 255), frog: RGB(0, 224, 188),
-                firefly: RGB(255, 218, 86), moon: RGB(255, 176, 92),
-                leafAutumn: [RGB(255,58,162), RGB(255,178,72), RGB(0,236,255)],
-                leafSpring: [RGB(255,68,176), RGB(0,240,255), RGB(255,198,86)],
-                leafSummer: [RGB(0,224,186), RGB(255,68,172), RGB(0,242,255)],
-                snow: RGB(180, 246, 255), eye: RGB(255, 232, 92)
-            )
-        }
         if config.monoMode {
             return Palette(
                 tod: tod, bg: RGB(8, 11, 16), waterDeep: RGB(16, 22, 32), stone: RGB(44, 52, 66), clock: RGB(54, 66, 82),
@@ -1184,10 +1237,13 @@ final class PondEngine {
         let dt = min(0.05, max(0.001, rawDt))
         time += dt
 
-        // Smooth transition into / out of Vice City Easter Egg mode (~1.3s fade)
-        let vcTarget: CGFloat = config.viceCityMode ? 1.0 : 0.0
-        viceCityBlend += (vcTarget - viceCityBlend) * min(1.0, dt * 2.6)
-        if abs(viceCityBlend - vcTarget) < 0.004 { viceCityBlend = vcTarget }
+        // Smooth, gradual transition into / out of Vice City Easter Egg mode (~1.1s linear-eased fade)
+        let vcStep = dt * 0.95
+        if config.viceCityMode {
+            viceCityBlend = min(1.0, viceCityBlend + vcStep)
+        } else {
+            viceCityBlend = max(0.0, viceCityBlend - vcStep)
+        }
 
         // Tempo-locked rhythm clock: keeps Koi heads turning Left <-> Right in steady BPM rhythm
         musicNoteCooldown = max(0, musicNoteCooldown - dt)
@@ -3453,17 +3509,18 @@ final class PondEngine {
             }
         }
 
-        // Vice City Mode: Smooth Bass-Reactive Neon Screen Border Glow (soft ambient at rest, balanced pulse on bass!)
-        if !config.minimalistMode && pal.tod == "vice" && !config.monoMode && cols > 14 && rows > 10 {
+        // Vice City Mode: Smooth Bass-Reactive Neon Screen Border Glow + Equalizer (fades in/out smoothly with viceCityBlend!)
+        if !config.minimalistMode && viceCityBlend > 0.02 && !config.monoMode && cols > 14 && rows > 10 {
+            let vcFade = viceCityBlend * viceCityBlend * (3.0 - 2.0 * viceCityBlend) // smoothstep 0..1
             let energy = min(1.0, beatEnergy * 0.92)
             let flip = (beatCounter % 2 == 0)
             let colA = flip ? RGB(255, 42, 162) : RGB(0, 245, 255) // Hot Magenta <-> Electric Cyan
             let colB = flip ? RGB(0, 245, 255) : RGB(255, 42, 162)
 
             // 1. Smooth CoreGraphics neon light wash along all 4 edges (subtle, refined glow!)
-            let bandW: CGFloat = (44 + energy * 78) * screenScale()
-            let bandH: CGFloat = (38 + energy * 70) * screenScale()
-            let edgeAlpha: CGFloat = min(0.40, 0.11 + energy * 0.29)
+            let bandW: CGFloat = (44 + energy * 78) * screenScale() * vcFade
+            let bandH: CGFloat = (38 + energy * 70) * screenScale() * vcFade
+            let edgeAlpha: CGFloat = min(0.40, 0.11 + energy * 0.29) * vcFade
             let cs = CGColorSpaceCreateDeviceRGB()
 
             func drawEdgeGradient(rect: CGRect, start: CGPoint, end: CGPoint, rgb: RGB) {
@@ -3495,7 +3552,7 @@ final class PondEngine {
             for layer in 0..<depthR {
                 let norm = CGFloat(layer) / CGFloat(max(1, depthR))
                 let falloff = pow(1.0 - norm, 1.85)
-                let a = min(0.76, (0.16 + energy * 0.56) * falloff)
+                let a = min(0.76, (0.16 + energy * 0.56) * falloff) * vcFade
                 if a < 0.06 { continue }
                 let ch: Character = layer == 0 ? "#" : (layer == 1 ? "=" : (layer <= 3 ? "~" : "·"))
                 let step = layer <= 1 ? 1 : (layer <= 3 ? 2 : 3)
@@ -3518,7 +3575,7 @@ final class PondEngine {
             for layer in 0..<depthC {
                 let norm = CGFloat(layer) / CGFloat(max(1, depthC))
                 let falloff = pow(1.0 - norm, 1.85)
-                let a = min(0.76, (0.16 + energy * 0.56) * falloff)
+                let a = min(0.76, (0.16 + energy * 0.56) * falloff) * vcFade
                 if a < 0.06 { continue }
                 let ch: Character = layer <= 1 ? "#" : (layer <= 3 ? ":" : "·")
                 let step = layer <= 2 ? 1 : 2
@@ -3551,8 +3608,8 @@ final class PondEngine {
                 for b in 0..<bands {
                     let level = max(0, min(1, audioSpectrum[b]))
                     let peak = max(level, min(1, spectrumPeaks[b]))
-                    let barH = Int(round(level * CGFloat(maxBarRows)))
-                    let peakH = Int(round(peak * CGFloat(maxBarRows)))
+                    let barH = Int(round(level * CGFloat(maxBarRows) * vcFade))
+                    let peakH = Int(round(peak * CGFloat(maxBarRows) * vcFade))
                     let bx = startC + b * slotW
 
                     // Vertical Vice City Neon Gradient: Electric Cyan (bottom) -> Hot Magenta (mid) -> Miami Gold (top!)
