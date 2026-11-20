@@ -2854,7 +2854,7 @@ final class PondEngine {
                 minR: max(0, Int(floor((minY - pad) / cellH))), maxR: min(rows - 1, Int(ceil((maxY + pad + shY) / cellH)))
             ))
         }
-        if !config.minimalistMode {
+        if !config.minimalistMode && pal.tod != "vice" {
             if let tr = turtle {
                 let pad = 54 * tr.scale
                 let shX = 6 + tr.z * 28, shY = 5 + tr.z * 24
@@ -3229,8 +3229,8 @@ final class PondEngine {
             }
         }
 
-        // Perched / Leaping / Climbing Frog (ABOVE lily pads, BELOW elevated leaves & tree branch!)
-        if !config.minimalistMode, let fr = frog, fr.state != .swimming {
+        // Perched / Leaping / Climbing Frog (hidden in Vice City mode so only Neon Koi rule the pond!)
+        if !config.minimalistMode && pal.tod != "vice", let fr = frog, fr.state != .swimming {
             let h = max(0, fr.z - 1.0)
             let shOffX: CGFloat = 5 + h * 34
             let shOffY: CGFloat = 4 + h * 28
@@ -3266,9 +3266,9 @@ final class PondEngine {
             }
         }
 
-        // Botanical Leaves / Sakura / Snow
+        // Botanical Leaves / Sakura / Snow (hidden in Vice City mode!)
         let leafPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
-        for lf in (config.minimalistMode ? [] : leaves) {
+        for lf in ((config.minimalistMode || pal.tod == "vice") ? [] : leaves) {
             let h = max(0, lf.z - 1.0)
             let fadeIn: CGFloat = lf.floating ? 1.0 : min(1.0, lf.age / 0.45)
             let fadeOut: CGFloat = fadeIn * ((lf.floating && lf.age > lf.maxAge - 3) ? max(0, (lf.maxAge - lf.age) / 3) : 1)
@@ -3362,8 +3362,8 @@ final class PondEngine {
             }
         }
 
-        // Dragonfly
-        if !config.minimalistMode, let df = dragonfly {
+        // Dragonfly (hidden in Vice City mode!)
+        if !config.minimalistMode && pal.tod != "vice", let df = dragonfly {
             let h = max(0, df.z - 1.0)
             let shC = Int((df.x + 14 + h * 36) / cellW), shR = Int((df.y + 12 + h * 30) / cellH)
             if shC >= 1 && shC < cols - 1 && shR >= 1 && shR < rows - 1 {
@@ -3456,6 +3456,52 @@ final class PondEngine {
                     let rgb = pal.tod == "vice" ? RGB(255, 58, 176) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
                     let boost: CGFloat = pal.tod == "vice" ? (1.0 + beatEnergy * 0.28) : 1.22
                     drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * boost), g: min(1, rgb.g * boost), b: min(1, rgb.b * boost), a: 0.99)
+                }
+            }
+        }
+
+        // Vice City Mode: Bass-Reactive Neon Screen Border (pulses Hot Magenta <-> Electric Cyan on every beat!)
+        if !config.minimalistMode && pal.tod == "vice" && !config.monoMode && cols > 10 && rows > 8 {
+            let pulse = min(1.0, 0.28 + beatEnergy * 0.95)
+            let depth = beatEnergy > 0.45 ? 3 : 2
+            let flip = (beatCounter % 2 == 0)
+            let colA = flip ? RGB(255, 42, 162) : RGB(0, 245, 255) // Hot Magenta <-> Electric Cyan
+            let colB = flip ? RGB(0, 245, 255) : RGB(255, 42, 162)
+
+            // Top & Bottom glowing neon edges
+            for layer in 0..<depth {
+                let layerFade: CGFloat = layer == 0 ? 1.0 : (layer == 1 ? 0.52 : 0.24)
+                let a = min(0.96, pulse * layerFade)
+                let ch: Character = layer == 0 ? (beatEnergy > 0.35 ? "=" : "~") : "·"
+                for c in stride(from: 0, to: cols, by: layer == 0 ? 1 : 2) {
+                    let frac = CGFloat(c) / CGFloat(max(1, cols - 1))
+                    let rT = colA.r * (1 - frac) + colB.r * frac
+                    let gT = colA.g * (1 - frac) + colB.g * frac
+                    let bT = colA.b * (1 - frac) + colB.b * frac
+                    drawGlyph(ctx, ch, col: c, row: layer, r: rT, g: gT, b: bT, a: a)
+
+                    let rB = colB.r * (1 - frac) + colA.r * frac
+                    let gB = colB.g * (1 - frac) + colA.g * frac
+                    let bB = colB.b * (1 - frac) + colA.b * frac
+                    drawGlyph(ctx, ch, col: c, row: rows - 1 - layer, r: rB, g: gB, b: bB, a: a)
+                }
+            }
+            // Left & Right glowing neon edges
+            for layer in 0..<depth {
+                let layerFade: CGFloat = layer == 0 ? 1.0 : (layer == 1 ? 0.52 : 0.24)
+                let a = min(0.96, pulse * layerFade)
+                let ch: Character = layer == 0 ? (beatEnergy > 0.35 ? "|" : ":") : "·"
+                for r in stride(from: depth, to: rows - depth, by: 1) {
+                    let frac = CGFloat(r) / CGFloat(max(1, rows - 1))
+                    let rL = colA.r * (1 - frac) + colB.r * frac
+                    let gL = colA.g * (1 - frac) + colB.g * frac
+                    let bL = colA.b * (1 - frac) + colB.b * frac
+                    drawGlyph(ctx, ch, col: layer, row: r, r: rL, g: gL, b: bL, a: a)
+
+                    let rR = colB.r * (1 - frac) + colA.r * frac
+                    let gR = colB.g * (1 - frac) + colA.g * frac
+                    let bR = colB.b * (1 - frac) + colA.b * frac
+                    drawGlyph(ctx, ch, col: cols - 1 - layer, row: r, r: rR, g: gR, b: bR, a: a)
                 }
             }
         }
