@@ -171,28 +171,28 @@ final class MusicMonitor {
         let blockDt = max(0.002, min(0.05, Float(sampleCount) / 48000.0))
 
         lock.lock()
-        if totalRMS > 0.003 {
+        if totalRMS > 0.0012 {
             lastSoundTime = now
         }
 
-        // True time-based moving average (~1.2s baseline so quiet bass doesn't fool it)
-        let avgRate = min(0.12, blockDt / 1.2)
+        // True time-based moving average (~1.1s baseline so it adapts cleanly at ANY listening volume!)
+        let avgRate = min(0.12, blockDt / 1.1)
         avgBass = avgBass * (1.0 - avgRate) + bassRMS * avgRate
 
-        // Zero-lag transient check directly on the 2.6ms block RMS vs previous block
+        // Zero-lag transient check directly on the block RMS vs previous block
         let prevBass = fastBass
         fastBass = bassRMS
 
-        let normalizedBass = min(1.0, CGFloat(bassRMS / max(0.02, avgBass * 2.4)))
-        currentBassLevel = currentBassLevel * 0.65 + normalizedBass * 0.35
+        let normalizedBass = min(1.0, CGFloat(bassRMS / max(0.005, avgBass * 2.1)))
+        currentBassLevel = currentBassLevel * 0.60 + normalizedBass * 0.40
 
-        // Fire immediately on the very first 2.6ms rising attack block of a strong kick/bass hit
-        let threshold = max(0.022, avgBass * 1.55)
-        let isRisingAttack = bassRMS > prevBass * 1.06
-        if bassRMS > threshold && isRisingAttack && (now - lastBeatTime) > 0.40 {
+        // Volume-adaptive kick/bass onset detection (low 0.0035 floor works even at quiet/medium volume!)
+        let threshold = max(0.0035, avgBass * 1.36)
+        let isRisingAttack = bassRMS > prevBass * 1.02
+        if bassRMS > threshold && isRisingAttack && (now - lastBeatTime) > 0.36 {
             lastBeatTime = now
-            let strength = min(1.0, CGFloat((bassRMS - avgBass) / max(0.015, avgBass * 1.6)))
-            pendingBeatStrength = max(pendingBeatStrength, max(0.50, strength))
+            let strength = min(1.0, CGFloat((bassRMS - avgBass) / max(0.004, avgBass * 1.25)))
+            pendingBeatStrength = max(pendingBeatStrength, max(0.68, strength))
         }
         lock.unlock()
     }
