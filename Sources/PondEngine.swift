@@ -3158,99 +3158,111 @@ final class PondEngine {
                     continue
                 }
 
-                // 6. Submerged stone clock (Vice City neon pink -> electric cyan gradient in GTA 6 mode!)
+                // 6. Submerged stone clock (smoothly crossfades into Vice City neon pink -> electric cyan gradient!)
                 if inClockRow && c >= clockStartC && c < clockEndC && isClockCell(c, r, timeChars) {
-                    if pal.tod == "vice" && !config.monoMode {
+                    let shimmer = 1.65 + 0.35 * sin(CGFloat(c) * 0.18 + time * 1.1)
+                    let baseR = min(1, pal.clock.r * shimmer)
+                    let baseG = min(1, pal.clock.g * shimmer)
+                    let baseB = min(1, pal.clock.b * shimmer)
+                    if viceCityBlend > 0.01 && !config.monoMode {
+                        let vc = viceCityBlend * viceCityBlend * (3.0 - 2.0 * viceCityBlend)
                         let vFrac = CGFloat(r - clockStartR) / max(1, CGFloat(clockTotalH - 1))
                         let pulse = 0.92 + 0.18 * beatEnergy + 0.08 * sin(CGFloat(c) * 0.22 + time * 2.2)
-                        let cr = (1.0 - vFrac) * 1.0 + vFrac * 0.04
-                        let cg = (1.0 - vFrac) * 0.20 + vFrac * 0.95
-                        let cb = (1.0 - vFrac) * 0.66 + vFrac * 1.0
-                        drawGlyph(ctx, "#", col: c, row: r, r: min(1, cr * pulse), g: min(1, cg * pulse), b: min(1, cb * pulse), a: 0.94)
+                        let cr = min(1, ((1.0 - vFrac) * 1.0 + vFrac * 0.04) * pulse)
+                        let cg = min(1, ((1.0 - vFrac) * 0.20 + vFrac * 0.95) * pulse)
+                        let cb = min(1, ((1.0 - vFrac) * 0.66 + vFrac * 1.0) * pulse)
+                        drawGlyph(ctx, "#", col: c, row: r, r: baseR + (cr - baseR) * vc, g: baseG + (cg - baseG) * vc, b: baseB + (cb - baseB) * vc, a: 0.88 + 0.06 * vc)
                     } else {
-                        let shimmer = 1.65 + 0.35 * sin(CGFloat(c) * 0.18 + time * 1.1)
-                        drawGlyph(ctx, "#", col: c, row: r, r: min(1, pal.clock.r * shimmer), g: min(1, pal.clock.g * shimmer), b: min(1, pal.clock.b * shimmer), a: 0.88)
+                        drawGlyph(ctx, "#", col: c, row: r, r: baseR, g: baseG, b: baseB, a: 0.88)
                     }
                     continue
                 }
 
                 if config.minimalistMode { continue }
 
-                // 7. Sun / Moon / Vice City Retro Synthwave Sun reflection & stones & caustics
+                // 7. Sun / Moon / Vice City Retro Synthwave Sun reflection (smooth crossfade!) & stones & caustics
                 let wave = sin(CGFloat(c) * 0.14 + time * 0.75 + rowWaveSin) *
                            cos(rowWaveCosBase + CGFloat(c) * 0.05)
+                let vcSunFade = viceCityBlend * viceCityBlend * (3.0 - 2.0 * viceCityBlend)
 
-                if pal.tod == "vice" {
-                    // Iconic Vice City Retro Synthwave Sun reflected on the upper pond water!
+                if vcSunFade > 0.02 && !config.monoMode {
+                    // Iconic Vice City Retro Synthwave Sun fading in/out smoothly on the upper pond water!
                     let sunX = width * 0.50, sunY = height * 0.23
                     let sdx = (px - sunX) * 0.78, sdy = (py - sunY) * 1.05
                     if abs(sdx) < 110 && abs(sdy) < 160 {
                         let sd = hypot(sdx, sdy)
                         if sd < 76 + wave * 6 {
-                            // Vertical synthwave gradient: Electric Gold -> Miami Coral -> Hot Magenta
                             let v = max(0, min(1, (sdy + 76) / 152))
-                            // Iconic horizontal synthwave scanline cutouts across the lower half!
                             let scanBand = (r % 3 == 0) && v > 0.48
                             if !scanBand {
                                 let sr: CGFloat = 1.0
                                 let sg: CGFloat = max(0.14, 0.92 - v * 0.78)
                                 let sb: CGFloat = min(0.75, 0.18 + v * 0.54)
                                 let sCh: Character = v < 0.35 ? "=" : (v < 0.70 ? "#" : "~")
-                                let sAlpha = min(0.88, (1.0 - sd / 92) * 0.95 + 0.12)
-                                drawGlyph(ctx, sCh, col: c, row: r, r: sr, g: sg, b: sb, a: sAlpha)
-                                continue
+                                let sAlpha = min(0.88, (1.0 - sd / 92) * 0.95 + 0.12) * vcSunFade
+                                if sAlpha > 0.04 {
+                                    drawGlyph(ctx, sCh, col: c, row: r, r: sr, g: sg, b: sb, a: sAlpha)
+                                    continue
+                                }
                             }
                         } else if sdy > 58 && sdy < 155 && abs(sdx) < (66 - (sdy - 58) * 0.42) + wave * 14 {
-                            // Shimmering neon coral-magenta reflection bars on the water below the retro sun
                             if wave > 0.10 {
-                                let trailA = max(0, (1.0 - (sdy - 58) / 100.0)) * 0.62
-                                drawGlyph(ctx, wave > 0.52 ? "=" : "~", col: c, row: r, r: 1.0, g: 0.26, b: 0.64, a: trailA)
-                                continue
+                                let trailA = max(0, (1.0 - (sdy - 58) / 100.0)) * 0.62 * vcSunFade
+                                if trailA > 0.04 {
+                                    drawGlyph(ctx, wave > 0.52 ? "=" : "~", col: c, row: r, r: 1.0, g: 0.26, b: 0.64, a: trailA)
+                                    continue
+                                }
                             }
                         }
                     }
-                } else if pal.tod == "night" {
+                }
+                let normalSkyFade = 1.0 - vcSunFade
+                let normalTod = activeTimeOfDay()
+                if normalSkyFade > 0.02 && normalTod == "night" {
                     // Luminous silver-cyan Moon reflection + shimmering vertical water trail
                     let mdx = (px - moonX) * 0.85, mdy = (py - moonY) * 1.05
                     if abs(mdx) < 76 && abs(mdy) < 115 {
                         let md = hypot(mdx, mdy)
                         if md < 54 + wave * 10 {
                             let core = md < 22
-                            let mAlpha = min(0.88, (1 - md / 66) * (core ? 0.85 : 0.56) + max(0, wave) * 0.24)
-                            if mAlpha > 0.10 {
+                            let mAlpha = min(0.88, (1 - md / 66) * (core ? 0.85 : 0.56) + max(0, wave) * 0.24) * normalSkyFade
+                            if mAlpha > 0.06 {
                                 let mCh: Character = md < 14 ? "O" : (md < 26 ? "@" : (md < 40 ? "~" : "·"))
                                 drawGlyph(ctx, mCh, col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: mAlpha)
                                 continue
                             }
                         } else if mdy > 30 && mdy < 110 && abs(mdx) < (42 - (mdy - 30) * 0.25) + wave * 12 {
-                            // Gentle rippling moonbeam bars on the water below the moon
                             if wave > 0.22 {
-                                let trailA = max(0, (1.0 - (mdy - 30) / 85.0)) * 0.52
-                                drawGlyph(ctx, wave > 0.58 ? "=" : "~", col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: trailA)
-                                continue
+                                let trailA = max(0, (1.0 - (mdy - 30) / 85.0)) * 0.52 * normalSkyFade
+                                if trailA > 0.05 {
+                                    drawGlyph(ctx, wave > 0.58 ? "=" : "~", col: c, row: r, r: pal.moon.r, g: pal.moon.g, b: pal.moon.b, a: trailA)
+                                    continue
+                                }
                             }
                         }
                     }
-                } else {
+                } else if normalSkyFade > 0.02 {
                     // Shimmering Sun reflection (pale warm gold at Day, glowing amber-orange at Sunset/Afternoon)
-                    let sunX = pal.tod == "sunset" ? width * 0.26 : width * 0.74
-                    let sunY = pal.tod == "sunset" ? height * 0.28 : height * 0.24
+                    let sunX = normalTod == "sunset" ? width * 0.26 : width * 0.74
+                    let sunY = normalTod == "sunset" ? height * 0.28 : height * 0.24
                     let sdx = (px - sunX) * 0.85, sdy = (py - sunY) * 1.0
                     if abs(sdx) < 88 && abs(sdy) < 125 {
                         let sd = hypot(sdx, sdy)
-                        let sunRgb = pal.tod == "sunset" ? RGB(255, 178, 92) : RGB(255, 246, 198)
+                        let sunRgb = normalTod == "sunset" ? RGB(255, 178, 92) : RGB(255, 246, 198)
                         if sd < 58 + wave * 12 {
-                            let sAlpha = min(0.76, (1 - sd / 70) * (sd < 24 ? 0.72 : 0.44) + max(0, wave) * 0.22)
-                            if sAlpha > 0.08 {
+                            let sAlpha = min(0.76, (1 - sd / 70) * (sd < 24 ? 0.72 : 0.44) + max(0, wave) * 0.22) * normalSkyFade
+                            if sAlpha > 0.05 {
                                 let sCh: Character = sd < 16 ? "@" : (sd < 30 ? "*" : (sd < 46 ? "~" : "·"))
                                 drawGlyph(ctx, sCh, col: c, row: r, r: sunRgb.r, g: sunRgb.g, b: sunRgb.b, a: sAlpha)
                                 continue
                             }
                         } else if sdy > 32 && sdy < 120 && abs(sdx) < (48 - (sdy - 32) * 0.22) + wave * 14 {
                             if wave > 0.18 {
-                                let trailA = max(0, (1.0 - (sdy - 32) / 92.0)) * (pal.tod == "sunset" ? 0.55 : 0.42)
-                                drawGlyph(ctx, wave > 0.55 ? "=" : "~", col: c, row: r, r: sunRgb.r, g: sunRgb.g, b: sunRgb.b, a: trailA)
-                                continue
+                                let trailA = max(0, (1.0 - (sdy - 32) / 92.0)) * (normalTod == "sunset" ? 0.55 : 0.42) * normalSkyFade
+                                if trailA > 0.05 {
+                                    drawGlyph(ctx, wave > 0.55 ? "=" : "~", col: c, row: r, r: sunRgb.r, g: sunRgb.g, b: sunRgb.b, a: trailA)
+                                    continue
+                                }
                             }
                         }
                     }
