@@ -102,6 +102,16 @@ final class MusicMonitor {
         }
     }
 
+    /// Non-destructive check of whether live system audio is currently active (nil if tap is off / no audio received yet).
+    func isAudioActiveNow() -> Bool? {
+        guard isTapRunning else { return nil }
+        lock.lock()
+        let gotAny = hasEverReceivedAudio
+        let active = (CFAbsoluteTimeGetCurrent() - lastSoundTime) < 1.8
+        lock.unlock()
+        return gotAny ? active : nil
+    }
+
     /// Consumes the latest real-time bass level (0..1), any newly detected beat hit (0..1), playing flag, and 24-band FFT spectrum.
     func consumeAudioFrame() -> (bass: CGFloat, beatHit: CGFloat, playing: Bool, spectrum: [CGFloat], receivedAudio: Bool) {
         lock.lock()

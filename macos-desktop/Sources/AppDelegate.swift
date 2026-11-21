@@ -105,6 +105,9 @@ final class ASCIIKoiDesktopApp: NSObject, NSApplicationDelegate {
             musicMenuItem.title = "Music: Off"
         }
 
+        nowPlayingMonitor.isSystemAudioPlaying = { [weak self] in
+            self?.musicMonitor.isAudioActiveNow()
+        }
         nowPlayingMonitor.onTrackChanged = { [weak self] track in
             guard let self = self else { return }
             self.songTriggersViceCity = track.isGTA6

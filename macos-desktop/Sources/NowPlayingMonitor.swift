@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 struct NowPlayingTrack {
@@ -9,11 +10,13 @@ struct NowPlayingTrack {
     var isGTA6: Bool = false
 }
 
-/// Lightweight multi-source song recognizer for Spotify, Apple Music, and Web Browsers (Safari/Chrome/Arc/Brave).
+/// Lightweight multi-source song recognizer for Spotify, Apple Music, and Web Browsers (Safari/Chrome/Arc/Brave/Edge/Firefox).
 /// - Spotify & Apple Music: 0% CPU event-driven via DistributedNotificationCenter.
-/// - Browsers (YouTube / YouTube Music / Spotify Web): background poll every 4s only when native apps are idle.
+/// - Browsers (YouTube / YouTube Music / Spotify Web): scans all open tabs + window titles every 2.5s in background.
 final class NowPlayingMonitor {
     var onTrackChanged: ((NowPlayingTrack) -> Void)?
+    /// Optional provider returning whether real-time system audio is currently active (so pausing YouTube fades out Vice City mode!)
+    var isSystemAudioPlaying: (() -> Bool?)?
 
     private var current = NowPlayingTrack()
     private var nativeAppPlaying = false
@@ -75,6 +78,8 @@ final class NowPlayingMonitor {
         "grand theft auto 6",
         "gta 6",
         "gta vi",
+        "gta6",
+        "gtavi",
         "vice city"
     ]
 
@@ -97,11 +102,11 @@ final class NowPlayingMonitor {
         pollOnceInBackground()
 
         browserTimer?.invalidate()
-        browserTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+        browserTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
             guard let self = self, !self.nativeAppPlaying else { return }
             self.pollBrowserTabsInBackground()
         }
-        browserTimer?.tolerance = 1.0
+        browserTimer?.tolerance = 0.5
     }
 
     func stop() {
@@ -178,71 +183,126 @@ final class NowPlayingMonitor {
     private func pollBrowserTabsInBackground() {
         bgQueue.async { [weak self] in
             guard let self = self else { return }
-            // Lightweight check of active tab titles in running browsers (YouTube, YouTube Music, Spotify Web)
+
+            // Collect candidate (source, tabTitle) from ALL tabs of running browsers (including background tabs!)
+            var candidates: [(source: String, title: String)] = []
+
             let script = """
-            set outStr to ""
+            set results to {}
+            if application "Safari" is running then
+                try
+                    tell application "Safari"
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                set end of results to ("Safari||" & (name of t))
+                            end repeat
+                        end repeat
+                    end tell
+                end try
+            end if
             if application "Google Chrome" is running then
                 try
                     tell application "Google Chrome"
-                        if (count of windows) > 0 then
-                            set t to title of active tab of front window
-                            if t contains "YouTube" or t contains "Spotify" or t contains "GTA" or t contains "Vice City" then
-                                set outStr to "Chrome||" & t
-                            end if
-                        end if
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                set end of results to ("Chrome||" & (title of t))
+                            end repeat
+                        end repeat
                     end tell
                 end try
             end if
-            if outStr is "" and application "Safari" is running then
-                try
-                    tell application "Safari"
-                        if (count of windows) > 0 then
-                            set t to name of current tab of front window
-                            if t contains "YouTube" or t contains "Spotify" or t contains "GTA" or t contains "Vice City" then
-                                set outStr to "Safari||" & t
-                            end if
-                        end if
-                    end tell
-                end try
-            end if
-            if outStr is "" and application "Arc" is running then
+            if application "Arc" is running then
                 try
                     tell application "Arc"
-                        if (count of windows) > 0 then
-                            set t to title of active tab of front window
-                            if t contains "YouTube" or t contains "Spotify" or t contains "GTA" or t contains "Vice City" then
-                                set outStr to "Arc||" & t
-                            end if
-                        end if
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                set end of results to ("Arc||" & (title of t))
+                            end repeat
+                        end repeat
                     end tell
                 end try
             end if
-            if outStr is "" and application "Brave Browser" is running then
+            if application "Brave Browser" is running then
                 try
                     tell application "Brave Browser"
-                        if (count of windows) > 0 then
-                            set t to title of active tab of front window
-                            if t contains "YouTube" or t contains "Spotify" or t contains "GTA" or t contains "Vice City" then
-                                set outStr to "Brave||" & t
-                            end if
-                        end if
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                set end of results to ("Brave||" & (title of t))
+                            end repeat
+                        end repeat
                     end tell
                 end try
             end if
-            return outStr
+            if application "Microsoft Edge" is running then
+                try
+                    tell application "Microsoft Edge"
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                set end of results to ("Edge||" & (title of t))
+                            end repeat
+                        end repeat
+                    end tell
+                end try
+            end if
+            set AppleScript's text item delimiters to linefeed
+            return results as text
             """
+
             if let res = self.runAppleScript(script), !res.isEmpty {
-                let parts = res.components(separatedBy: "||")
-                if parts.count >= 2 {
-                    let src = parts[0]
-                    let cleanTitle = parts[1]
-                        .replacingOccurrences(of: " - YouTube Music", with: "")
-                        .replacingOccurrences(of: " - YouTube", with: "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.updateTrack(title: cleanTitle, artist: "", album: "", source: src, isPlaying: true)
-                    return
+                for line in res.components(separatedBy: .newlines) {
+                    let parts = line.components(separatedBy: "||")
+                    if parts.count >= 2 {
+                        let title = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !title.isEmpty {
+                            candidates.append((parts[0], title))
+                        }
+                    }
                 }
             }
+
+            // Also inspect visible browser window titles via CGWindowList (works with ZERO Automation permission & supports Firefox/Zen/Opera!)
+            if let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+                let browserNames = ["Safari", "Google Chrome", "Arc", "Brave Browser", "Microsoft Edge", "Firefox", "Opera", "Vivaldi", "Zen"]
+                for w in list {
+                    guard let owner = w[kCGWindowOwnerName as String] as? String,
+                          let name = w[kCGWindowName as String] as? String,
+                          !name.isEmpty,
+                          browserNames.contains(where: { owner.localizedCaseInsensitiveContains($0) }) else { continue }
+                    candidates.append((owner, name))
+                }
+            }
+
+            // 1. Highest priority: any browser tab matching GTA 6 / Vice City!
+            var chosen: (source: String, title: String)? = nil
+            for cand in candidates {
+                if Self.matchesGTA6(title: cand.title, artist: "", album: "") {
+                    chosen = cand
+                    break
+                }
+            }
+            // 2. Otherwise pick any active music/video streaming tab (YouTube, YouTube Music, Spotify Web, SoundCloud)
+            if chosen == nil {
+                for cand in candidates {
+                    let low = cand.title.lowercased()
+                    if low.contains("youtube") || low.contains("spotify") || low.contains("soundcloud") || low.contains("apple music") {
+                        chosen = cand
+                        break
+                    }
+                }
+            }
+
+            if let match = chosen {
+                let cleanTitle = match.title
+                    .replacingOccurrences(of: " - YouTube Music", with: "")
+                    .replacingOccurrences(of: " - YouTube", with: "")
+                    .replacingOccurrences(of: " – Spotify", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                // If real-time audio monitor is active and receiving audio, respect play/pause state!
+                let audioPlaying = self.isSystemAudioPlaying?() ?? true
+                self.updateTrack(title: cleanTitle, artist: "", album: "", source: match.source, isPlaying: audioPlaying)
+                return
+            }
+
             if !self.nativeAppPlaying && self.current.isPlaying && self.current.source != "Spotify" && self.current.source != "Apple Music" {
                 self.updateTrack(title: "", artist: "", album: "", source: "", isPlaying: false)
             }

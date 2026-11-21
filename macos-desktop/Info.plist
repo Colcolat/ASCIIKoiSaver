@@ -25,7 +25,7 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSAppleEventsUsageDescription</key>
-    <string>ASCII Koi Desktop uses Finder to empty the Trash when you click "Feed Trash to Koi".</string>
+    <string>ASCII Koi Desktop reads browser music tabs for the Vice City Easter Egg and uses Finder to empty the Trash when you click "Feed Trash to Koi".</string>
     <key>NSAudioCaptureUsageDescription</key>
     <string>ASCII Koi Desktop analyzes system audio rhythm in real time so the Koi groove to your music. Audio is never recorded or stored.</string>
 </dict>
