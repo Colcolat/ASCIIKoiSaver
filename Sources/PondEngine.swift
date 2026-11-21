@@ -2538,7 +2538,7 @@ final class PondEngine {
     }
 
     private func ensureTreeBranchCache(season actSeason: String) {
-        let isVice = viceCityBlend > 0.45
+        let isVice = viceCityBlend >= 0.50
         let key = "\(config.treeBranch)_\(isVice ? "vicePalm" : actSeason)_\(cols)x\(rows)"
         if branchCacheKey == key { return }
         branchCacheKey = key
@@ -3049,31 +3049,44 @@ final class PondEngine {
                         var ch = ramp[idx]
                         if isDorsal { ch = idx > 10 ? "W" : "+" }
                         else if isGill { ch = "(" }
-                        if pal.tod == "vice" && !config.monoMode {
-                            // Vice City Neon Koi: sleek dark midnight body with ELECTRIC NEON GLOWING EDGES!
+
+                        let baseRgb: RGB
+                        var boost = 0.45 + shade * 0.65
+                        switch pigment {
+                        case 1: baseRgb = pal.red; boost = 0.50 + shade * 0.62
+                        case 2: baseRgb = pal.black; boost = 0.70 + shade * 1.50; ch = shade > 0.80 ? "#" : (isScaleEdge ? ":" : "%")
+                        case 3: baseRgb = pal.gold; boost = 0.50 + shade * 0.68
+                        case 4: baseRgb = config.monoMode ? pal.white : RGB(66, 146, 255); boost = 0.58 + shade * 0.68
+                        case 5: baseRgb = config.monoMode ? pal.fin : RGB(154, 108, 255); boost = 0.58 + shade * 0.68
+                        case 6: baseRgb = config.monoMode ? pal.white : RGB(115, 246, 255); boost = 0.85 + shade * 0.45; ch = "*"
+                        case 7: baseRgb = config.monoMode ? pal.red : RGB(224, 118, 76); boost = 0.55 + shade * 0.65
+                        case 8: baseRgb = config.monoMode ? pal.white : RGB(248, 232, 208); boost = 0.52 + shade * 0.62
+                        default: baseRgb = pal.white
+                        }
+
+                        if viceCityBlend > 0.01 && !config.monoMode {
+                            // Smoothly crossfade normal Koi into sleek dark-core + ELECTRIC NEON EDGE-GLOWING Koi!
+                            let vc = viceCityBlend * viceCityBlend * (3.0 - 2.0 * viceCityBlend)
                             let rimColor: RGB = (pigment == 1 || pigment == 7) ? RGB(255, 42, 162) : (pigment == 3 ? RGB(255, 206, 68) : RGB(0, 248, 255))
                             if isRim || isDorsal {
-                                let glowCh: Character = isDorsal ? "*" : (shade > 0.55 ? "#" : "+")
-                                drawGlyph(ctx, glowCh, col: c, row: r, r: rimColor.r, g: rimColor.g, b: rimColor.b, a: 0.98)
+                                let clampedZ = max(0, min(1, depthZ))
+                                let clarity = 0.42 + clampedZ * 0.58
+                                let normR = pal.waterDeep.r * (1 - clarity) + baseRgb.r * boost * clarity
+                                let normG = pal.waterDeep.g * (1 - clarity) + baseRgb.g * boost * clarity
+                                let normB = pal.waterDeep.b * (1 - clarity) + baseRgb.b * boost * clarity
+                                let outR = normR + (rimColor.r - normR) * vc
+                                let outG = normG + (rimColor.g - normG) * vc
+                                let outB = normB + (rimColor.b - normB) * vc
+                                let outCh: Character = vc > 0.55 ? (isDorsal ? "*" : (shade > 0.55 ? "#" : "+")) : ch
+                                drawGlyph(ctx, outCh, col: c, row: r, r: outR, g: outG, b: outB, a: 0.98)
                             } else {
                                 let coreRgb = RGB(36, 18, 68)
-                                let tint = 0.55 + shade * 0.55
-                                drawDepthGlyph(ctx, isScaleEdge ? ":" : ch, col: c, row: r, rgb: coreRgb, z: depthZ, pal: pal, mult: tint)
+                                let blendedRgb = baseRgb.lerp(to: coreRgb, t: vc)
+                                let blendedMult = boost * (1 - vc) + (0.55 + shade * 0.55) * vc
+                                let outCh: Character = (vc > 0.60 && isScaleEdge) ? ":" : ch
+                                drawDepthGlyph(ctx, outCh, col: c, row: r, rgb: blendedRgb, z: depthZ, pal: pal, mult: blendedMult)
                             }
                         } else {
-                            let baseRgb: RGB
-                            var boost = 0.45 + shade * 0.65
-                            switch pigment {
-                            case 1: baseRgb = pal.red; boost = 0.50 + shade * 0.62
-                            case 2: baseRgb = pal.black; boost = 0.70 + shade * 1.50; ch = shade > 0.80 ? "#" : (isScaleEdge ? ":" : "%")
-                            case 3: baseRgb = pal.gold; boost = 0.50 + shade * 0.68
-                            case 4: baseRgb = config.monoMode ? pal.white : RGB(66, 146, 255); boost = 0.58 + shade * 0.68
-                            case 5: baseRgb = config.monoMode ? pal.fin : RGB(154, 108, 255); boost = 0.58 + shade * 0.68
-                            case 6: baseRgb = config.monoMode ? pal.white : RGB(115, 246, 255); boost = 0.85 + shade * 0.45; ch = "*"
-                            case 7: baseRgb = config.monoMode ? pal.red : RGB(224, 118, 76); boost = 0.55 + shade * 0.65
-                            case 8: baseRgb = config.monoMode ? pal.white : RGB(248, 232, 208); boost = 0.52 + shade * 0.62
-                            default: baseRgb = pal.white
-                            }
                             drawDepthGlyph(ctx, ch, col: c, row: r, rgb: baseRgb, z: depthZ, pal: pal, mult: boost)
                         }
                     case .fin(let density, let dark, let spine, let depthZ):
@@ -3470,41 +3483,47 @@ final class PondEngine {
             }
         }
 
-        // Overhanging corner tree branch OR Vice City Tropical Palm Tree (pre-rasterized -> ~0.1ms/frame!)
+        // Overhanging corner tree branch OR Vice City Tropical Palm Tree (smooth fade-out -> swap at 0.5 -> fade-in!)
         if !config.minimalistMode && config.treeBranch != "none" {
             ensureTreeBranchCache(season: actSeason)
-            let breeze = sin(time * 0.85) * 1.15
-            let barkDark = config.monoMode ? pal.stone : (pal.tod == "vice" ? RGB(68, 30, 82) : RGB(78, 56, 44))
-            let barkLight = config.monoMode ? pal.ripple : (pal.tod == "vice" ? RGB(132, 58, 128) : RGB(118, 86, 66))
-            let branchPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
-            let isWinter = actSeason == "winter" && pal.tod != "vice"
+            let isVicePalm = viceCityBlend >= 0.50
+            let treeAlpha: CGFloat = isVicePalm
+                ? min(1.0, (viceCityBlend - 0.50) * 2.0)
+                : min(1.0, (0.50 - viceCityBlend) * 2.0)
+            if treeAlpha > 0.02 {
+                let breeze = sin(time * 0.85) * 1.15
+                let barkDark = config.monoMode ? pal.stone : (isVicePalm ? RGB(68, 30, 82) : RGB(78, 56, 44))
+                let barkLight = config.monoMode ? pal.ripple : (isVicePalm ? RGB(132, 58, 128) : RGB(118, 86, 66))
+                let branchPal = actSeason == "spring" ? pal.leafSpring : (actSeason == "summer" ? pal.leafSummer : pal.leafAutumn)
+                let isWinter = actSeason == "winter" && !isVicePalm
 
-            // 1. Cast shadow on pond water below
-            for sh in branchShadowCells {
-                let sc = sh.col + Int(round(breeze * sh.swayWeight))
-                if sc >= 0 && sc < cols {
-                    drawGlyph(ctx, sh.ch, col: sc, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.82)
+                // 1. Cast shadow on pond water below
+                for sh in branchShadowCells {
+                    let sc = sh.col + Int(round(breeze * sh.swayWeight))
+                    if sc >= 0 && sc < cols {
+                        drawGlyph(ctx, sh.ch, col: sc, row: sh.row, r: pal.shadow.r, g: pal.shadow.g, b: pal.shadow.b, a: pal.shadowAlpha * 0.82 * treeAlpha)
+                    }
                 }
-            }
-            // 2. Branch wood & 3-tier top-down foliage/palm canopy
-            for bc in branchCells {
-                let cc = bc.col + Int(round(breeze * bc.swayWeight))
-                guard cc >= 0 && cc < cols else { continue }
-                switch bc.kind {
-                case 0: // Deep bark
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkDark.r, g: barkDark.g, b: barkDark.b, a: 0.96)
-                case 1: // Top-ridge sunlit bark / palm rib
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkLight.r, g: barkLight.g, b: barkLight.b, a: 0.96)
-                case 2: // Lower shaded under-canopy
-                    let rgb = pal.tod == "vice" ? RGB(16, 132, 138) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * (pal.tod == "vice" ? 0.82 : 0.56), g: rgb.g * (pal.tod == "vice" ? 0.82 : 0.56), b: rgb.b * (pal.tod == "vice" ? 0.82 : 0.56), a: 0.92)
-                case 3: // Mid-crown foliage / neon palm leaflets
-                    let rgb = pal.tod == "vice" ? RGB(0, 226, 198) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.92, g: rgb.g * 0.92, b: rgb.b * 0.92, a: 0.96)
-                default: // Upper sunlit crown tips / Vice City neon magenta palm tips!
-                    let rgb = pal.tod == "vice" ? RGB(255, 58, 176) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
-                    let boost: CGFloat = pal.tod == "vice" ? (1.0 + beatEnergy * 0.28) : 1.22
-                    drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * boost), g: min(1, rgb.g * boost), b: min(1, rgb.b * boost), a: 0.99)
+                // 2. Branch wood & 3-tier top-down foliage/palm canopy
+                for bc in branchCells {
+                    let cc = bc.col + Int(round(breeze * bc.swayWeight))
+                    guard cc >= 0 && cc < cols else { continue }
+                    switch bc.kind {
+                    case 0: // Deep bark
+                        drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkDark.r, g: barkDark.g, b: barkDark.b, a: 0.96 * treeAlpha)
+                    case 1: // Top-ridge sunlit bark / palm rib
+                        drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: barkLight.r, g: barkLight.g, b: barkLight.b, a: 0.96 * treeAlpha)
+                    case 2: // Lower shaded under-canopy
+                        let rgb = isVicePalm ? RGB(16, 132, 138) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
+                        drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * (isVicePalm ? 0.82 : 0.56), g: rgb.g * (isVicePalm ? 0.82 : 0.56), b: rgb.b * (isVicePalm ? 0.82 : 0.56), a: 0.92 * treeAlpha)
+                    case 3: // Mid-crown foliage / neon palm leaflets
+                        let rgb = isVicePalm ? RGB(0, 226, 198) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
+                        drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: rgb.r * 0.92, g: rgb.g * 0.92, b: rgb.b * 0.92, a: 0.96 * treeAlpha)
+                    default: // Upper sunlit crown tips / Vice City neon magenta palm tips!
+                        let rgb = isVicePalm ? RGB(255, 58, 176) : (isWinter ? pal.snow : branchPal[bc.colorIdx % branchPal.count])
+                        let boost: CGFloat = isVicePalm ? (1.0 + beatEnergy * 0.28) : 1.22
+                        drawGlyph(ctx, bc.ch, col: cc, row: bc.row, r: min(1, rgb.r * boost), g: min(1, rgb.g * boost), b: min(1, rgb.b * boost), a: 0.99 * treeAlpha)
+                    }
                 }
             }
         }
